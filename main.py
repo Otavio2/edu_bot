@@ -16,6 +16,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
 MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # ID do canal/grupo de memória. Ex: -1001234567890
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Ex: https://seu-app.onrender.com
 
 # Suporte a múltiplas chaves Groq
 GROQ_KEYS = [
@@ -37,8 +38,11 @@ user_timezones = {}
 group_ids = set()
 group_languages = {}
 
-# --- BANCO LOCAL PRA BUSCA RÁPIDA ---
-conn = sqlite3.connect("memoria_bot.db", check_same_thread=False)
+# --- BANCO LOCAL PRA BUSCA RÁPIDA - RENDER FREE USA /tmp ---
+os.makedirs("/tmp", exist_ok=True)
+DB_PATH = "/tmp/memoria_bot.db" # Render só deixa escrever aqui
+
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS memoria
              (id INTEGER PRIMARY KEY, chat_id INTEGER, user_id INTEGER, pergunta TEXT, resposta TEXT, timestamp DATETIME)''')
@@ -71,7 +75,7 @@ def auto_manage_history(user_id):
 
 # --- Funções de Memória no Canal ---
 def salvar_no_canal(chat_origem, user_id, pergunta, resposta):
-    if not MEMORY_CHANNEL_ID: return
+    if not MEMORY_CHANNEL_ID or not TELEGRAM_TOKEN: return
     texto = f"""🧠 NOVA MEMÓRIA
 
 **De:** `{chat_origem}`
@@ -179,6 +183,7 @@ def get_quiz_api():
 
 # --- Telegram ---
 def send_telegram_message(chat_id, text, reply_to_message_id=None):
+    if not TELEGRAM_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     if reply_to_message_id: payload["reply_to_message_id"] = reply_to_message_id
@@ -231,6 +236,21 @@ def auto_post():
 scheduler = BackgroundScheduler()
 scheduler.add_job(auto_post, "interval", hours=6)
 scheduler.start()
+
+# --- Ativar Webhook automaticamente ao subir ---
+def set_webhook():
+    if not WEBHOOK_URL or not TELEGRAM_TOKEN:
+        print("WEBHOOK_URL ou TELEGRAM_TOKEN faltando")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+    full_url = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
+    try:
+        r = requests.post(url, json={"url": full_url}, timeout=5)
+        print("Webhook setado:", r.json())
+    except Exception as e:
+        print("Erro ao setar webhook:", e)
+
+set_webhook()
 
 # --- Webhook com regra educada ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
@@ -293,5 +313,4 @@ def favicon():
 @app.route("/")
 def index(): return f"{BOT_NAME} rodando com memória em canal! Criado por {CREATOR_NAME} 🎭"
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+# Não precisa de app.run() - o gunicorn cuida disso
