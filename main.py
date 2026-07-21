@@ -15,7 +15,7 @@ app = Flask(__name__)
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
-MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # ID do canal/grupo de memória. Ex: -1001234567890
+MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # Ex: -1003791940625
 WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Ex: https://seu-app.onrender.com
 
 # Suporte a múltiplas chaves Groq
@@ -40,7 +40,7 @@ group_languages = {}
 
 # --- BANCO LOCAL PRA BUSCA RÁPIDA - RENDER FREE USA /tmp ---
 os.makedirs("/tmp", exist_ok=True)
-DB_PATH = "/tmp/memoria_bot.db" # Render só deixa escrever aqui
+DB_PATH = "/tmp/memoria_bot.db"
 
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 c = conn.cursor()
@@ -75,7 +75,14 @@ def auto_manage_history(user_id):
 
 # --- Funções de Memória no Canal ---
 def salvar_no_canal(chat_origem, user_id, pergunta, resposta):
-    if not MEMORY_CHANNEL_ID or not TELEGRAM_TOKEN: return
+    if not MEMORY_CHANNEL_ID or not TELEGRAM_TOKEN:
+        print("ERRO: MEMORY_CHANNEL_ID ou TOKEN vazio")
+        return
+
+    # Não salvar comandos pra não poluir o canal
+    if pergunta.startswith("/"):
+        return
+
     texto = f"""🧠 NOVA MEMÓRIA
 
 **De:** `{chat_origem}`
@@ -83,10 +90,17 @@ def salvar_no_canal(chat_origem, user_id, pergunta, resposta):
 **Pergunta:** {pergunta}
 **Resposta:** {resposta}
 **Data:** {datetime.now().strftime('%d/%m %H:%M')}"""
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": MEMORY_CHANNEL_ID, "text": texto, "parse_mode": "Markdown"}
-    try: requests.post(url, json=payload, timeout=5)
-    except Exception as e: print("Erro ao salvar no canal:", e)
+
+    try:
+        r = requests.post(url, json=payload, timeout=5)
+        print("Resposta do Telegram ao salvar:", r.json())
+        if not r.json().get("ok"):
+            print("ERRO TELEGRAM:", r.json().get("description"))
+    except Exception as e:
+        print("Erro ao salvar no canal:", e)
 
 def buscar_memoria_local(pergunta, limite=0.8):
     c.execute("SELECT pergunta, resposta FROM memoria ORDER BY timestamp DESC LIMIT 500")
@@ -312,5 +326,3 @@ def favicon():
 
 @app.route("/")
 def index(): return f"{BOT_NAME} rodando com memória em canal! Criado por {CREATOR_NAME} 🎭"
-
-# Não precisa de app.run() - o gunicorn cuida disso
