@@ -28,7 +28,7 @@ GROQ_KEYS = [
 # Configurações fixas
 BOT_NAME = "Hansel"
 CREATOR_NAME = "Kleber"
-BOT_USERNAME = "@Group_klbBot"
+BOT_USERNAME = "@NIOBIOchat_BOT"
 
 # Limites e histórico
 HISTORY_LIMIT = 30
