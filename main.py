@@ -7,16 +7,16 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import random
 import io
 import base64
-import sqlite3
-import difflib
+import re
+import json
 
 app = Flask(__name__)
 
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
-MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # Ex: -1003791940625
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Ex: https://seu-app.onrender.com
+MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # Ex: -1001234567890
+MEMORY_FILE = "memoria.json" # arquivo pra não perder memória
 
 # Suporte a múltiplas chaves Groq
 GROQ_KEYS = [
@@ -37,16 +37,53 @@ conversations = {}
 user_timezones = {}
 group_ids = set()
 group_languages = {}
+memory_cache = [] # cache em RAM
 
-# --- BANCO LOCAL PRA BUSCA RÁPIDA - RENDER FREE USA /tmp ---
-os.makedirs("/tmp", exist_ok=True)
-DB_PATH = "/tmp/memoria_bot.db"
+# --- FUNÇÕES DE MEMÓRIA COM JSON ---
+def carregar_memoria():
+    """Carrega memória do arquivo pro cache"""
+    global memory_cache
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                memory_cache = json.load(f)
+        except:
+            memory_cache = []
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS memoria
-             (id INTEGER PRIMARY KEY, chat_id INTEGER, user_id INTEGER, pergunta TEXT, resposta TEXT, timestamp DATETIME)''')
-conn.commit()
+def salvar_memoria():
+    """Salva cache no arquivo"""
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(memory_cache[-1000:], f, ensure_ascii=False, indent=2) # guarda últimas 1000
+
+def salvar_no_canal(user_id, user_msg, bot_reply):
+    """Salva no canal + no arquivo + no cache"""
+    item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now())}
+    memory_cache.append(item)
+
+    # Salva no arquivo
+    salvar_memoria()
+
+    # Salva no canal também pra backup
+    if MEMORY_CHANNEL_ID:
+        texto = f"USER_ID: {user_id}\nUSER: {user_msg}\nBOT: {bot_reply}\n---"
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": MEMORY_CHANNEL_ID, "text": texto}
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except Exception as e:
+            print("Erro ao salvar no canal:", e)
+
+def buscar_na_memoria(query):
+    """Busca no cache em RAM"""
+    query_lower = query.lower()
+    # Busca das mais recentes pra mais antigas
+    for item in reversed(memory_cache):
+        if query_lower in item['user'].lower() or query_lower in item['bot'].lower():
+            return item['bot']
+    return None
+
+# Carrega memória ao iniciar
+carregar_memoria()
 
 # --- Funções de suporte ---
 def detect_timezone(ip):
@@ -54,8 +91,10 @@ def detect_timezone(ip):
         response = requests.get(f"https://ipapi.co/{ip}/timezone/", timeout=5)
         if response.status_code == 200:
             tz = response.text.strip()
-            if tz: return tz
-    except: pass
+            if tz:
+                return tz
+    except:
+        pass
     return DEFAULT_TIMEZONE
 
 def get_user_time(user_id):
@@ -66,83 +105,42 @@ def get_user_time(user_id):
 
 def should_add_time_info(user_msg):
     keywords = ["hora", "horário", "data", "dia", "que horas", "que dia"]
-    return any(keyword in user_msg.lower() for keyword in keywords)
+    msg_lower = user_msg.lower()
+    return any(keyword in msg_lower for keyword in keywords)
 
 def auto_manage_history(user_id):
     history = conversations.get(user_id, [])
     if len(history) > HISTORY_LIMIT:
         conversations[user_id] = history[-HISTORY_LIMIT:]
 
-# --- Funções de Memória no Canal ---
-def salvar_no_canal(chat_origem, user_id, pergunta, resposta):
-    if not MEMORY_CHANNEL_ID or not TELEGRAM_TOKEN:
-        print("ERRO: MEMORY_CHANNEL_ID ou TOKEN vazio")
-        return
-
-    # Não salvar comandos pra não poluir o canal
-    if pergunta.startswith("/"):
-        return
-
-    texto = f"""🧠 NOVA MEMÓRIA
-
-**De:** `{chat_origem}`
-**User:** `{user_id}`
-**Pergunta:** {pergunta}
-**Resposta:** {resposta}
-**Data:** {datetime.now().strftime('%d/%m %H:%M')}"""
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": MEMORY_CHANNEL_ID, "text": texto, "parse_mode": "Markdown"}
-
-    try:
-        r = requests.post(url, json=payload, timeout=5)
-        print("Resposta do Telegram ao salvar:", r.json())
-        if not r.json().get("ok"):
-            print("ERRO TELEGRAM:", r.json().get("description"))
-    except Exception as e:
-        print("Erro ao salvar no canal:", e)
-
-def buscar_memoria_local(pergunta, limite=0.8):
-    c.execute("SELECT pergunta, resposta FROM memoria ORDER BY timestamp DESC LIMIT 500")
-    dados = c.fetchall()
-    for p_salva, r_salva in dados:
-        similaridade = difflib.SequenceMatcher(None, pergunta.lower(), p_salva).ratio()
-        if similaridade > limite:
-            return r_salva
-    return None
-
-def salvar_memoria_local(chat_id, user_id, pergunta, resposta):
-    c.execute("INSERT INTO memoria (chat_id, user_id, pergunta, resposta, timestamp) VALUES (?,?,?,?,?)",
-              (chat_id, user_id, pergunta.lower(), resposta, datetime.now()))
-    conn.commit()
-
 # --- Função Groq (IA) ---
 def call_groq_api(payload, model="llama-3.3-70b-versatile"):
     for key in GROQ_KEYS:
-        if not key: continue
+        if not key:
+            continue
         try:
             response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={**payload, "model": model}, timeout=10
+                json={**payload, "model": model},
+                timeout=10
             )
             if response.status_code == 200:
                 return response.json()["choices"][0]["message"]["content"]
-        except: pass
+        except:
+            pass
     if model == "llama-3.3-70b-versatile":
         return call_groq_api(payload, model="llama-3.1-8b-instant")
     return None
 
-# --- Função de chat com economia de IA ---
-def groq_chat(user_id, user_msg, chat_id):
-    # 1. BUSCA PRIMEIRO NA MEMÓRIA LOCAL
-    resposta_memoria = buscar_memoria_local(user_msg)
-    if resposta_memoria:
-        print(f"[MEMÓRIA] Resposta sem IA para: {user_msg[:30]}")
-        return resposta_memoria
+# --- Função de chat COM MEMÓRIA REAL ---
+def groq_chat(user_id, user_msg):
+    # 1. BUSCA NA MEMÓRIA PRIMEIRO
+    memoria = buscar_na_memoria(user_msg)
+    if memoria:
+        return memoria
 
     # 2. SE NÃO ACHOU: USA IA
-    print(f"[IA] Gastando token para: {user_msg[:30]}")
     history = conversations.get(user_id, [])
     history.append({"role": "user", "content": user_msg})
     auto_manage_history(user_id)
@@ -158,28 +156,44 @@ def groq_chat(user_id, user_msg, chat_id):
 
     payload = {
         "messages": [
-            {"role": "system", "content": f"Você é {BOT_NAME}, bot criado por {CREATOR_NAME}. {creator_info} Responda sempre no idioma enviado pelo usuário, seja curto, natural, direto, com emojis quando fizer sentido. {time_info}"}
+            {
+                "role": "system",
+                "content": (
+                    f"Você é {BOT_NAME}, um amigo humano criado por {CREATOR_NAME}. {creator_info} "
+                    "Responda sempre no idioma enviado pelo usuário, seja curto, natural, direto, como uma pessoa de verdade. "
+                    "Use gírias leves, emojis quando fizer sentido. Nunca diga que é bot ou IA. "
+                    "Seja educado e não encha o saco. "
+                    f"{time_info}"
+                )
+            }
         ] + history
     }
 
     reply = call_groq_api(payload)
-    if not reply: reply = "Ops, buguei 🤯 tenta de novo aí!"
+    if not reply:
+        reply = "Ops, buguei 🤯 tenta de novo aí!"
 
-    # 3. SALVA EM TUDO: CANAL + LOCAL + HISTORICO
-    salvar_no_canal(chat_id, user_id, user_msg, reply)
-    salvar_memoria_local(chat_id, user_id, user_msg, reply)
+    # 3. SALVA NA MEMÓRIA
+    salvar_no_canal(user_id, user_msg, reply)
+
     history.append({"role": "assistant", "content": reply})
     conversations[user_id] = history[-HISTORY_LIMIT:]
     return reply
 
 # --- Funções API ---
 def get_joke_api():
-    try: return requests.get("https://api.chucknorris.io/jokes/random", timeout=5).json().get('value', '😅 Sem piada')
-    except: return "😅 Sem piada"
+    try:
+        r = requests.get("https://api.chucknorris.io/jokes/random", timeout=5)
+        return r.json().get('value', '😅 Não consegui pegar uma piada agora.')
+    except:
+        return "😅 Não consegui pegar uma piada agora."
 
 def get_fact_api():
-    try: return requests.get("https://uselessfacts.jsph.pl/random.json?language=en", timeout=5).json().get('text', '🤔 Sem fato')
-    except: return "🤔 Sem fato"
+    try:
+        r = requests.get("https://uselessfacts.jsph.pl/random.json?language=en", timeout=5)
+        return r.json().get('text', '🤔 Não consegui achar um fato agora.')
+    except:
+        return "🤔 Não consegui achar um fato agora."
 
 def get_quiz_api():
     try:
@@ -192,56 +206,80 @@ def get_quiz_api():
             options = q["incorrect_answers"] + [correct]
             random.shuffle(options)
             return f"❓ {question}\nOpções: {', '.join(options)}\nResposta: {correct}"
-    except: return "🤔 Sem quiz"
-    return "🤔 Sem quiz"
+    except:
+        return "🤔 Não consegui pegar um quiz agora."
+    return "🤔 Não consegui pegar um quiz agora."
 
 # --- Telegram ---
 def send_telegram_message(chat_id, text, reply_to_message_id=None):
-    if not TELEGRAM_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    if reply_to_message_id: payload["reply_to_message_id"] = reply_to_message_id
-    try: requests.post(url, json=payload, timeout=5)
-    except Exception as e: print("Erro Telegram:", e)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print("Erro Telegram:", e)
 
-# --- Quiz com enquetes ---
+# --- Quiz com enquetes nativas ---
 def send_translated_quiz(chat_id, user_id, lang="pt"):
     quiz_raw = get_quiz_api()
-    if not quiz_raw or "❓" not in quiz_raw: return
+    if not quiz_raw or "❓" not in quiz_raw:
+        send_telegram_message(chat_id, "🤔 Não consegui gerar um quiz agora.")
+        return
+
     try:
         question_part, options_part = quiz_raw.split("\nOpções: ")
         question = question_part.replace("❓", "").strip()
         options = [opt.strip() for opt in options_part.split(",")]
-    except: return
+    except:
+        send_telegram_message(chat_id, "🤔 Erro ao preparar o quiz.")
+        return
 
-    translated_question = groq_chat(user_id, f"Traduza para {lang} apenas esta pergunta: {question}", chat_id)
-    translated_options = [groq_chat(user_id, f"Traduza para {lang} apenas esta opção: {opt}", chat_id) for opt in options]
+    translated_question = groq_chat(user_id, f"Traduza para {lang} apenas esta pergunta: {question}")
+    translated_options = []
+    for opt in options:
+        t_opt = groq_chat(user_id, f"Traduza para {lang} apenas esta opção: {opt}")
+        translated_options.append(t_opt)
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
-    payload = {"chat_id": chat_id, "question": translated_question, "options": translated_options, "is_anonymous": False}
+    payload = {
+        "chat_id": chat_id,
+        "question": translated_question,
+        "options": translated_options,
+        "is_anonymous": False
+    }
     try:
         resp = requests.post(url, json=payload, timeout=5).json()
         if resp.get("ok"):
             poll_message_id = resp["result"]["message_id"]
-            scheduler.add_job(lambda: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
-                json={"chat_id": chat_id, "message_id": poll_message_id}, timeout=5), "date",
-                run_date=datetime.now(pytz.UTC) + timedelta(minutes=2))
-    except Exception as e: print("Erro ao enviar quiz:", e)
+            scheduler.add_job(
+                lambda: requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+                    json={"chat_id": chat_id, "message_id": poll_message_id},
+                    timeout=5
+                ),
+                "date",
+                run_date=datetime.now(pytz.UTC) + timedelta(minutes=2)
+            )
+    except Exception as e:
+        print("Erro ao enviar quiz:", e)
 
-# --- Postagens automáticas ---
+# --- Postagens automáticas traduzidas ---
 def auto_post():
-    if not group_ids: return
+    if not group_ids:
+        return
     post_type = random.choice(["piada", "fato", "quiz"])
     for gid in group_ids:
         user_lang = group_languages.get(gid, "pt")
         if post_type == "piada":
             post = get_joke_api()
-            post = groq_chat(OWNER_ID, f"Traduza e adapte para {user_lang}: {post}", gid)
-            post = f"PIADA\n🤣 {post}"
+            post = groq_chat(OWNER_ID, f"Traduza e adapte para {user_lang}: {post}")
+            post = f"*PIADA*\n🤣 {post}"
         elif post_type == "fato":
             post = get_fact_api()
-            post = groq_chat(OWNER_ID, f"Traduza e adapte para {user_lang}: {post}", gid)
-            post = f"FATO CURIOSO\n📚 {post}"
+            post = groq_chat(OWNER_ID, f"Traduza e adapte para {user_lang}: {post}")
+            post = f"*FATO CURIOSO*\n📚 {post}"
         else:
             send_translated_quiz(gid, OWNER_ID, user_lang)
             continue
@@ -251,78 +289,114 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(auto_post, "interval", hours=6)
 scheduler.start()
 
-# --- Ativar Webhook automaticamente ao subir ---
-def set_webhook():
-    if not WEBHOOK_URL or not TELEGRAM_TOKEN:
-        print("WEBHOOK_URL ou TELEGRAM_TOKEN faltando")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    full_url = f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}"
-    try:
-        r = requests.post(url, json={"url": full_url}, timeout=5)
-        print("Webhook setado:", r.json())
-    except Exception as e:
-        print("Erro ao setar webhook:", e)
+# --- Limpar menção do texto ---
+def clean_mention(text):
+    text = re.sub(r'@\w+', '', text)
+    text = re.sub(rf'{BOT_NAME}', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
-set_webhook()
-
-# --- Webhook com regra educada ---
+# --- Webhook ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.json
     message = data.get("message", {})
     chat_id = message.get("chat", {}).get("id")
     chat_type = message.get("chat", {}).get("type")
-    user_id = message.get("from", {}).get("id")
 
     if chat_type in ["group", "supergroup"]:
         group_ids.add(chat_id)
         if chat_id not in group_languages:
-            group_languages[chat_id] = message.get("from", {}).get("language_code", "pt")
+            lang_code = message.get("from", {}).get("language_code", "pt")
+            group_languages[chat_id] = lang_code
 
-    if message.get("from", {}).get("is_bot"): return jsonify({"ok": True})
+    if message.get("from", {}).get("is_bot"):
+        return jsonify({"ok": True})
 
     if "text" in message:
         user_msg = message["text"].strip()
         should_reply = False
-        msg_lower = user_msg.lower()
+        clean_msg = user_msg
 
-        # REGRA EDUCADA PRA GRUPO
-        foi_mencionado = BOT_NAME.lower() in msg_lower or (BOT_USERNAME and BOT_USERNAME.lower() in msg_lower)
-        foi_educado = any(p in msg_lower for p in ["por favor", "pfv", "obrigado", "obg", "pode"])
-        eh_comando = user_msg.startswith(("/", "!", "."))
-        respondeu_ele = message.get("reply_to_message", {}).get("from", {}).get("username", "").lower() == BOT_USERNAME.lower().replace("@", "")
+        # REGRA 1: PV responde tudo
+        if chat_type == "private":
+            should_reply = True
 
-        if chat_type == "private": should_reply = True
-        elif (foi_mencionado and foi_educado) or respondeu_ele: should_reply = True
-        elif eh_comando: should_reply = True
+        # REGRA 2: GRUPO só responde se mencionar
+        elif chat_type in ["group", "supergroup"]:
+            username_clean = BOT_USERNAME.lower().replace("@", "")
+            msg_lower = user_msg.lower()
+
+            foi_mencionado = (
+                f"@{username_clean}" in msg_lower or
+                BOT_NAME.lower() in msg_lower or
+                message.get("reply_to_message", {}).get("from", {}).get("username", "").lower() == username_clean
+            )
+
+            if foi_mencionado:
+                should_reply = True
+                clean_msg = clean_mention(user_msg)
+                if clean_msg == "":
+                    clean_msg = "Oi"
 
         if should_reply:
             try:
-                if user_msg.lower().startswith("/piada"):
+                user_id = message["from"]["id"]
+
+                if clean_msg.lower().startswith("/piada"):
                     post = get_joke_api()
-                    reply = groq_chat(user_id, f"Traduza e adapte para o idioma do usuário: {post}", chat_id)
-                    send_telegram_message(chat_id, f"PIADA\n🤣 {reply}", message.get("message_id"))
-                elif user_msg.lower().startswith("/fato"):
+                    reply = groq_chat(user_id, f"Traduza e adapte para o idioma do usuário: {post}")
+                    send_telegram_message(chat_id, f"*PIADA*\n🤣 {reply}", reply_to_message_id=message.get("message_id"))
+                    scheduler.add_job(lambda: requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+                        json={"chat_id": chat_id, "message_id": message.get("message_id")},
+                        timeout=5
+                    ), "date", run_date=datetime.now(pytz.UTC) + timedelta(seconds=5))
+                    return jsonify({"ok": True})
+
+                elif clean_msg.lower().startswith("/fato"):
                     post = get_fact_api()
-                    reply = groq_chat(user_id, f"Traduza e adapte para o idioma do usuário: {post}", chat_id)
-                    send_telegram_message(chat_id, f"FATO CURIOSO\n📚 {reply}", message.get("message_id"))
-                elif user_msg.lower().startswith("/quiz"):
+                    reply = groq_chat(user_id, f"Traduza e adapte para o idioma do usuário: {post}")
+                    send_telegram_message(chat_id, f"*FATO CURIOSO*\n📚 {reply}", reply_to_message_id=message.get("message_id"))
+                    scheduler.add_job(lambda: requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+                        json={"chat_id": chat_id, "message_id": message.get("message_id")},
+                        timeout=5
+                    ), "date", run_date=datetime.now(pytz.UTC) + timedelta(seconds=5))
+                    return jsonify({"ok": True})
+
+                elif clean_msg.lower().startswith("/quiz"):
                     user_lang = group_languages.get(chat_id, "pt")
                     send_translated_quiz(chat_id, user_id, user_lang)
+                    scheduler.add_job(lambda: requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
+                        json={"chat_id": chat_id, "message_id": message.get("message_id")},
+                        timeout=5
+                    ), "date", run_date=datetime.now(pytz.UTC) + timedelta(seconds=5))
+                    return jsonify({"ok": True})
+
                 else:
-                    reply = groq_chat(user_id, user_msg, chat_id)
-                    send_telegram_message(chat_id, reply, message.get("message_id"))
+                    reply = groq_chat(user_id, clean_msg)
+                    send_telegram_message(chat_id, reply, reply_to_message_id=message.get("message_id"))
+
             except Exception as e:
                 print("Erro ao processar mensagem:", e)
+                reply = groq_chat(message["from"]["id"], clean_msg)
+                send_telegram_message(chat_id, reply, reply_to_message_id=message.get("message_id"))
 
     return jsonify({"ok": True})
 
-# --- Favicon e Index ---
+# --- Favicon ---
 @app.route("/favicon.ico")
 def favicon():
     ico_base64 = b"AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAAAAAAAA"
-    return send_file(io.BytesIO(base64.b64decode(ico_base64)), mimetype="image/vnd.microsoft.icon")
+    ico_bytes = base64.b64decode(ico_base64)
+    return send_file(io.BytesIO(ico_bytes), mimetype="image/vnd.microsoft.icon")
 
+# --- Index ---
 @app.route("/")
-def index(): return f"{BOT_NAME} rodando com memória em canal! Criado por {CREATOR_NAME} 🎭"
+def index():
+    return f"{BOT_NAME} rodando! Criado por {CREATOR_NAME} 🎭 | Memória: {len(memory_cache)} itens"
+
+# --- Main ---
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
