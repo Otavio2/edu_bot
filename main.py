@@ -1,12 +1,10 @@
 import os
 import requests
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 import random
-import io
-import base64
 import re
 import json
 import time
@@ -16,7 +14,7 @@ app = Flask(__name__)
 # --- Variáveis de ambiente ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
-MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # Ex: -1001234567890
+MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID")
 MEMORY_FILE = "memoria.json"
 
 GROQ_KEYS = [
@@ -28,9 +26,9 @@ GROQ_KEYS = [
 # --- Configurações ---
 BOT_NAME = "Hansel"
 CREATOR_NAME = "Kleber"
-BOT_USERNAME = "@KLEBERchat_BOT" # <-- COLOCA O SEU @AQUI
+BOT_USERNAME = "@KLEBERchat_BOT"
 BOT_FIRST_NAME = "Hansel"
-BOT_ID = 123456789 # <-- PEGA SEU ID COM @userinfobot no Telegram
+BOT_ID = 123456789 # <-- PEGA SEU ID COM @userinfobot
 
 HISTORY_LIMIT = 30
 DEFAULT_TIMEZONE = "UTC"
@@ -40,17 +38,32 @@ group_ids = set()
 group_languages = {}
 memory_cache = []
 
+# --- FILTRO ANTI CONTEÚDO +18 ---
+PALAVRAS_BLOQUEADAS = [
+    "porn", "sexo", "puta", "pinto", "buceta", "fuder", "gozar", "nudes", "hentai", "xxx"
+]
+def contem_conteudo_bloqueado(texto):
+    texto_lower = texto.lower()
+    return any(p in texto_lower for p in PALAVRAS_BLOQUEADAS)
+
 # --- MEMÓRIA INFINITA COM CANAL ---
 def salvar_memoria():
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(memory_cache[-3000:], f, ensure_ascii=False, indent=2)
 
+def ja_existe_na_memoria(user_id, user_msg, bot_reply):
+    if not memory_cache:
+        return False
+    ultimas = [i for i in memory_cache if str(i['user_id']) == str(user_id)][-5:]
+    for item in ultimas:
+        if item['user'].strip().lower() == user_msg.strip().lower() and item['bot'].strip().lower() == bot_reply.strip().lower():
+            return True
+    return False
+
 def carregar_memoria_do_canal():
-    """Baixa todas as mensagens do canal e popula a memória"""
     global memory_cache
     if not MEMORY_CHANNEL_ID:
         return
-
     offset = 0
     limit = 100
     todos_itens = []
@@ -59,18 +72,10 @@ def carregar_memoria_do_canal():
     while True:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatHistory"
         try:
-            r = requests.post(url, json={
-                "chat_id": MEMORY_CHANNEL_ID,
-                "limit": limit,
-                "offset": offset
-            }, timeout=15).json()
-
-            if not r.get("ok"):
-                break
-
+            r = requests.post(url, json={"chat_id": MEMORY_CHANNEL_ID, "limit": limit, "offset": offset}, timeout=15).json()
+            if not r.get("ok"): break
             mensagens = r.get("result", {}).get("messages", [])
-            if not mensagens:
-                break
+            if not mensagens: break
 
             for msg in mensagens:
                 if "text" in msg and "USER_ID:" in msg["text"]:
@@ -79,15 +84,14 @@ def carregar_memoria_do_canal():
                         user_id = linhas[0].replace("USER_ID: ", "").strip()
                         user = linhas[1].replace("USER: ", "").strip()
                         bot = linhas[2].replace("BOT: ", "").strip()
-                        todos_itens.append({"user_id": user_id, "user": user, "bot": bot, "time": msg["date"]})
-                    except:
-                        continue
+                        importante = "IMPORTANTE" in msg["text"] # Flag de like
+                        if not contem_conteudo_bloqueado(user) and not contem_conteudo_bloqueado(bot):
+                            todos_itens.append({"user_id": user_id, "user": user, "bot": bot, "time": msg["date"], "importante": importante})
+                    except: continue
 
-            if len(mensagens) < limit:
-                break
+            if len(mensagens) < limit: break
             offset += limit
             time.sleep(0.1)
-
         except Exception as e:
             print("Erro ao carregar canal:", e)
             break
@@ -102,17 +106,24 @@ def carregar_memoria():
         try:
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
                 memory_cache = json.load(f)
-        except:
-            memory_cache = []
+        except: memory_cache = []
     carregar_memoria_do_canal()
 
-def salvar_no_canal(user_id, user_msg, bot_reply):
-    # AGORA SALVA TUDO
-    item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now())}
+def salvar_no_canal(user_id, user_msg, bot_reply, importante=False):
+    if contem_conteudo_bloqueado(user_msg) or contem_conteudo_bloqueado(bot_reply):
+        print(f"Mensagem bloqueada, não salva: {user_id}")
+        return
+    if ja_existe_na_memoria(user_id, user_msg, bot_reply):
+        print(f"Mensagem repetida, ignorada: {user_id}")
+        return
+
+    item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now()), "importante": importante}
     memory_cache.append(item)
     salvar_memoria()
+
     if MEMORY_CHANNEL_ID:
-        texto = f"USER_ID: {user_id}\nUSER: {user_msg}\nBOT: {bot_reply}\n---"
+        tag = "\nIMPORTANTE" if importante else ""
+        texto = f"USER_ID: {user_id}\nUSER: {user_msg}\nBOT: {bot_reply}{tag}\n---"
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                           json={"chat_id": MEMORY_CHANNEL_ID, "text": texto}, timeout=5)
@@ -122,8 +133,11 @@ def salvar_no_canal(user_id, user_msg, bot_reply):
 def gerar_resumo_usuario(user_id):
     infos = [item for item in memory_cache if str(item['user_id']) == str(user_id)]
     if not infos: return ""
-    texto = "\n".join([f"Usuário: {i['user']}" for i in infos[-25:]])
-    prompt = f"Resuma em 5 linhas o que você sabe sobre esta pessoa: {texto}"
+    # Prioriza mensagens importantes
+    importantes = [i for i in infos if i.get("importante")]
+    normais = [i for i in infos if not i.get("importante")][-15:]
+    texto = "\n".join([f"IMPORTANTE: {i['user']}" for i in importantes[-10:]] + [f"Usuário: {i['user']}" for i in normais])
+    prompt = f"Resuma em 5 linhas o que você sabe sobre esta pessoa. Foque no que está marcado como IMPORTANTE: {texto}"
     resumo = call_groq_api({"messages": [{"role": "user", "content": prompt}]}, model="llama-3.1-8b-instant")
     return f"MEMÓRIA DO USUÁRIO: {resumo}\n" if resumo else ""
 
@@ -143,24 +157,26 @@ def auto_manage_history(user_id):
     if len(history) > HISTORY_LIMIT:
         conversations[user_id] = history[-HISTORY_LIMIT:]
 
-# --- GROQ ---
-def call_groq_api(payload, model="llama-3.3-70b-versatile"):
+# --- GROQ COM TEMPERATURE ALTA = MAIS CRIATIVO ---
+def call_groq_api(payload, model="llama-3.3-70b-versatile", temperature=0.9):
     for key in GROQ_KEYS:
         if not key: continue
         try:
             r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={**payload, "model": model}, timeout=15)
+                json={**payload, "model": model, "temperature": temperature}, timeout=15)
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
         except: pass
     if model == "llama-3.3-70b-versatile":
-        return call_groq_api(payload, model="llama-3.1-8b-instant")
+        return call_groq_api(payload, model="llama-3.1-8b-instant", temperature=temperature)
     return None
 
 def groq_chat(user_id, user_msg):
-    memoria_resumo = gerar_resumo_usuario(user_id)
+    if contem_conteudo_bloqueado(user_msg):
+        return "Opa, prefiro não falar sobre isso 😅 Bora mudar de assunto?"
 
+    memoria_resumo = gerar_resumo_usuario(user_id)
     history = conversations.get(user_id, [])
     history.append({"role": "user", "content": user_msg})
     auto_manage_history(user_id)
@@ -173,15 +189,30 @@ def groq_chat(user_id, user_msg):
         "messages": [
             {
                 "role": "system",
-                "content": f"Você é {BOT_NAME}, amigo humano criado por {CREATOR_NAME}. {creator_info} {memoria_resumo} Responda no idioma do usuário, curto, natural, com gírias leves. Nunca diga que é bot. {time_info}"
+                "content": f"Você é {BOT_NAME}, amigo humano criado por {CREATOR_NAME}. {creator_info} {memoria_resumo} Responda no idioma do usuário, curto, natural, com gírias leves, bem-humorado e CRIATIVO. Varie suas respostas, não seja repetitivo. NUNCA fale de conteúdo sexual, pornográfico ou +18. Se pedirem, mude de assunto educadamente. {time_info}"
             }
         ] + history
     }
-    reply = call_groq_api(payload) or "Ops, buguei 🤯 tenta de novo aí!"
+    reply = call_groq_api(payload, temperature=0.9) or "Ops, buguei 🤯 tenta de novo aí!" # temperature 0.9 = mais aleatório
+
+    if contem_conteudo_bloqueado(reply):
+        reply = "Prefiro não entrar nesse assunto 😅 Quer conversar sobre outra coisa?"
+
     salvar_no_canal(user_id, user_msg, reply)
     history.append({"role": "assistant", "content": reply})
     conversations[user_id] = history[-HISTORY_LIMIT:]
     return reply
+
+# --- LIDAR COM REAÇÕES/LIKES ---
+def marcar_como_importante(chat_id, message_id):
+    """Procura a última mensagem do bot nesse chat e marca como importante"""
+    for item in reversed(memory_cache):
+        if str(item.get('chat_id')) == str(chat_id): # Precisamos salvar chat_id também
+            item['importante'] = True
+            salvar_memoria()
+            # Reenvia pro canal com tag IMPORTANTE
+            salvar_no_canal(item['user_id'], item['user'], item['bot'], importante=True)
+            break
 
 # --- APIs ---
 def get_joke_api():
@@ -190,47 +221,14 @@ def get_joke_api():
 def get_fact_api():
     try: return requests.get("https://uselessfacts.jsph.pl/random.json?language=en", timeout=5).json().get('text', '🤔 Sem fato')
     except: return "🤔 Sem fato"
-def get_quiz_api():
-    try:
-        data = requests.get("https://opentdb.com/api.php?amount=1&type=multiple", timeout=5).json()
-        if data.get("results"):
-            q = data["results"][0]
-            options = q["incorrect_answers"] + [q["correct_answer"]]
-            random.shuffle(options)
-            return f"❓ {q['question']}\nOpções: {', '.join(options)}\nResposta: {q['correct_answer']}"
-    except: pass
-    return "🤔 Sem quiz"
 
-# --- TELEGRAM ---
 def send_telegram_message(chat_id, text, reply_to_message_id=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_to_message_id: payload["reply_to_message_id"] = reply_to_message_id
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=5)
+    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=5)
+    return r.json().get("result", {}).get("message_id") # Retorna o message_id
 
-def send_translated_quiz(chat_id, user_id, lang="pt"):
-    quiz_raw = get_quiz_api()
-    if "❓" not in quiz_raw: return send_telegram_message(chat_id, "🤔 Sem quiz")
-    q, opts = quiz_raw.split("\nOpções: ")
-    question = q.replace("❓", "").strip()
-    options = [o.strip() for o in opts.split(",")]
-    t_q = groq_chat(user_id, f"Traduza para {lang}: {question}")
-    t_opts = [groq_chat(user_id, f"Traduza para {lang}: {o}") for o in options]
-    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll", json={
-        "chat_id": chat_id, "question": t_q, "options": t_opts, "is_anonymous": False
-    }, timeout=5).json()
-    if r.get("ok"):
-        scheduler.add_job(lambda: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage",
-            json={"chat_id": chat_id, "message_id": r["result"]["message_id"]}), "date", run_date=datetime.now(pytz.UTC)+timedelta(minutes=2))
-
-def auto_post():
-    if not group_ids: return
-    post_type = random.choice(["piada", "fato", "quiz"])
-    for gid in group_ids:
-        lang = group_languages.get(gid, "pt")
-        if post_type == "piada": send_telegram_message(gid, f"*PIADA*\n🤣 {groq_chat(OWNER_ID, f'Traduza para {lang}: {get_joke_api()}')}")
-        elif post_type == "fato": send_telegram_message(gid, f"*FATO*\n📚 {groq_chat(OWNER_ID, f'Traduza para {lang}: {get_fact_api()}')}")
-        else: send_translated_quiz(gid, OWNER_ID, lang)
-
+def auto_post(): pass
 scheduler = BackgroundScheduler()
 scheduler.add_job(auto_post, "interval", hours=6)
 scheduler.start()
@@ -241,19 +239,23 @@ def clean_mention(text):
     text = re.sub(rf'{BOT_FIRST_NAME}', '', text, flags=re.IGNORECASE)
     return text.strip()
 
-# --- WEBHOOK CORRIGIDO ---
+# --- WEBHOOK ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.json
+
+    # 1. LIDAR COM REAÇÕES
+    if "message_reaction" in data:
+        reaction = data["message_reaction"]
+        if any(r['emoji'] == '❤️' for r in reaction.get('new_reaction', [])):
+            marcar_como_importante(reaction['chat']['id'], reaction['message_id'])
+        return jsonify({"ok": True})
+
     message = data.get("message", {})
     chat_id = message.get("chat", {}).get("id")
     chat_type = message.get("chat", {}).get("type")
 
-    if chat_type in ["group", "supergroup"]:
-        group_ids.add(chat_id)
-        if chat_id not in group_languages:
-            group_languages[chat_id] = message.get("from", {}).get("language_code", "pt")
-
+    if chat_type in ["group", "supergroup"]: group_ids.add(chat_id)
     if message.get("from", {}).get("is_bot"): return jsonify({"ok": True})
 
     if "text" in message:
@@ -261,23 +263,15 @@ def webhook():
         should_reply = False
         clean_msg = user_msg
 
-        if chat_type == "private":
-            should_reply = True
+        if chat_type == "private": should_reply = True
         elif chat_type in ["group", "supergroup"]:
             u_clean = BOT_USERNAME.lower().replace("@", "")
             msg_lower = user_msg.lower()
             reply_to = message.get("reply_to_message", {})
-            
-            # FIX 1: Agora checa por ID também
             respondendo_bot = False
             if reply_to:
                 reply_from = reply_to.get("from", {})
-                respondendo_bot = (
-                    reply_from.get("username", "").lower() == u_clean or 
-                    reply_from.get("first_name", "").lower() == BOT_FIRST_NAME.lower() or
-                    str(reply_from.get("id")) == str(BOT_ID)
-                )
-
+                respondendo_bot = str(reply_from.get("id")) == str(BOT_ID)
             foi_mencionado = f"@{u_clean}" in msg_lower or BOT_NAME.lower() in msg_lower or BOT_FIRST_NAME.lower() in msg_lower or respondendo_bot
             if foi_mencionado:
                 should_reply = True
@@ -285,17 +279,13 @@ def webhook():
 
         if should_reply:
             user_id = message["from"]["id"]
-            if clean_msg.lower().startswith("/piada"):
-                reply = groq_chat(user_id, f"Traduza: {get_joke_api()}")
-                send_telegram_message(chat_id, f"*PIADA*\n🤣 {reply}", message.get("message_id"))
-            elif clean_msg.lower().startswith("/fato"):
-                reply = groq_chat(user_id, f"Traduza: {get_fact_api()}")
-                send_telegram_message(chat_id, f"*FATO*\n📚 {reply}", message.get("message_id"))
-            elif clean_msg.lower().startswith("/quiz"):
-                send_translated_quiz(chat_id, user_id, group_languages.get(chat_id, "pt"))
-            else:
-                reply = groq_chat(user_id, clean_msg)
-                send_telegram_message(chat_id, reply, message.get("message_id"))
+            reply = groq_chat(user_id, clean_msg)
+            msg_id = send_telegram_message(chat_id, reply, message.get("message_id"))
+            # Salva com chat_id pra poder marcar como importante depois
+            if memory_cache:
+                memory_cache[-1]['chat_id'] = chat_id
+                memory_cache[-1]['message_id'] = msg_id
+                salvar_memoria()
 
     return jsonify({"ok": True})
 
