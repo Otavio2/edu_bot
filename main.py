@@ -16,7 +16,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
 MEMORY_CHANNEL_ID = os.getenv("MEMORY_CHANNEL_ID") # Ex: -1001234567890
-MEMORY_FILE = "memoria.json" # arquivo pra não perder memória
+MEMORY_FILE = "memoria.json"
 
 # Suporte a múltiplas chaves Groq
 GROQ_KEYS = [
@@ -37,11 +37,10 @@ conversations = {}
 user_timezones = {}
 group_ids = set()
 group_languages = {}
-memory_cache = [] # cache em RAM
+memory_cache = []
 
 # --- FUNÇÕES DE MEMÓRIA COM JSON ---
 def carregar_memoria():
-    """Carrega memória do arquivo pro cache"""
     global memory_cache
     if os.path.exists(MEMORY_FILE):
         try:
@@ -51,19 +50,14 @@ def carregar_memoria():
             memory_cache = []
 
 def salvar_memoria():
-    """Salva cache no arquivo"""
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(memory_cache[-1000:], f, ensure_ascii=False, indent=2) # guarda últimas 1000
+        json.dump(memory_cache[-1000:], f, ensure_ascii=False, indent=2)
 
 def salvar_no_canal(user_id, user_msg, bot_reply):
-    """Salva no canal + no arquivo + no cache"""
     item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now())}
     memory_cache.append(item)
-
-    # Salva no arquivo
     salvar_memoria()
 
-    # Salva no canal também pra backup
     if MEMORY_CHANNEL_ID:
         texto = f"USER_ID: {user_id}\nUSER: {user_msg}\nBOT: {bot_reply}\n---"
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -74,15 +68,12 @@ def salvar_no_canal(user_id, user_msg, bot_reply):
             print("Erro ao salvar no canal:", e)
 
 def buscar_na_memoria(query):
-    """Busca no cache em RAM"""
     query_lower = query.lower()
-    # Busca das mais recentes pra mais antigas
     for item in reversed(memory_cache):
         if query_lower in item['user'].lower() or query_lower in item['bot'].lower():
             return item['bot']
     return None
 
-# Carrega memória ao iniciar
 carregar_memoria()
 
 # --- Funções de suporte ---
@@ -133,14 +124,12 @@ def call_groq_api(payload, model="llama-3.3-70b-versatile"):
         return call_groq_api(payload, model="llama-3.1-8b-instant")
     return None
 
-# --- Função de chat COM MEMÓRIA REAL ---
+# --- Função de chat COM MEMÓRIA ---
 def groq_chat(user_id, user_msg):
-    # 1. BUSCA NA MEMÓRIA PRIMEIRO
     memoria = buscar_na_memoria(user_msg)
     if memoria:
         return memoria
 
-    # 2. SE NÃO ACHOU: USA IA
     history = conversations.get(user_id, [])
     history.append({"role": "user", "content": user_msg})
     auto_manage_history(user_id)
@@ -173,7 +162,6 @@ def groq_chat(user_id, user_msg):
     if not reply:
         reply = "Ops, buguei 🤯 tenta de novo aí!"
 
-    # 3. SALVA NA MEMÓRIA
     salvar_no_canal(user_id, user_msg, reply)
 
     history.append({"role": "assistant", "content": reply})
@@ -295,7 +283,7 @@ def clean_mention(text):
     text = re.sub(rf'{BOT_NAME}', '', text, flags=re.IGNORECASE)
     return text.strip()
 
-# --- Webhook ---
+# --- Webhook COM RESPOSTA AO REPLY ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     data = request.json
@@ -321,15 +309,18 @@ def webhook():
         if chat_type == "private":
             should_reply = True
 
-        # REGRA 2: GRUPO só responde se mencionar
+        # REGRA 2: GRUPO só responde se mencionar OU responder ele
         elif chat_type in ["group", "supergroup"]:
             username_clean = BOT_USERNAME.lower().replace("@", "")
             msg_lower = user_msg.lower()
 
+            reply_to = message.get("reply_to_message", {})
+            respondendo_bot = reply_to.get("from", {}).get("username", "").lower() == username_clean
+
             foi_mencionado = (
                 f"@{username_clean}" in msg_lower or
                 BOT_NAME.lower() in msg_lower or
-                message.get("reply_to_message", {}).get("from", {}).get("username", "").lower() == username_clean
+                respondendo_bot
             )
 
             if foi_mencionado:
