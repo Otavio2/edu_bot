@@ -24,10 +24,10 @@ GROQ_KEYS = [
 ]
 
 # --- Configurações ---
-BOT_NAME = "Hansel"
+BOT_NAME = "Matheus"
 CREATOR_NAME = "Kleber"
 BOT_USERNAME = "@KLEBERchat_BOT"
-BOT_FIRST_NAME = "Hansel"
+BOT_FIRST_NAME = "Matheus"
 BOT_ID = 123456789 # <-- PEGA SEU ID COM @userinfobot
 
 HISTORY_LIMIT = 30
