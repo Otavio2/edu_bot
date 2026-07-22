@@ -26,7 +26,7 @@ GROQ_KEYS = [
 # --- Configurações ---
 BOT_NAME = "Hansel"
 CREATOR_NAME = "Kleber"
-BOT_USERNAME = "@Group_klbBot"
+BOT_USERNAME = "@NIOBIOchat_BOT"
 BOT_FIRST_NAME = "Hansel"
 BOT_ID = 123456789 # <-- PEGA SEU ID COM @userinfobot
 
