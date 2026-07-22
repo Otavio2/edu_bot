@@ -24,10 +24,10 @@ GROQ_KEYS = [
 ]
 
 # --- Configurações ---
-BOT_NAME = "Matheus"
+BOT_NAME = "Hansel"
 CREATOR_NAME = "Kleber"
-BOT_USERNAME = "@KLEBERchat_BOT"
-BOT_FIRST_NAME = "Matheus"
+BOT_USERNAME = "@Group_klbBot"
+BOT_FIRST_NAME = "Hansel"
 BOT_ID = 123456789 # <-- PEGA SEU ID COM @userinfobot
 
 HISTORY_LIMIT = 30
@@ -46,10 +46,10 @@ def contem_conteudo_bloqueado(texto):
     texto_lower = texto.lower()
     return any(p in texto_lower for p in PALAVRAS_BLOQUEADAS)
 
-# --- MEMÓRIA INFINITA COM CANAL ---
+# --- MEMÓRIA INFINITA CORRIGIDA ---
 def salvar_memoria():
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(memory_cache[-3000:], f, ensure_ascii=False, indent=2)
+        json.dump(memory_cache[-5000:], f, ensure_ascii=False, indent=2) # Aumentei pra 5000
 
 def ja_existe_na_memoria(user_id, user_msg, bot_reply):
     if not memory_cache:
@@ -60,56 +60,20 @@ def ja_existe_na_memoria(user_id, user_msg, bot_reply):
             return True
     return False
 
-def carregar_memoria_do_canal():
-    global memory_cache
-    if not MEMORY_CHANNEL_ID:
-        return
-    offset = 0
-    limit = 100
-    todos_itens = []
-    print("Carregando memória do canal...")
-
-    while True:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getChatHistory"
-        try:
-            r = requests.post(url, json={"chat_id": MEMORY_CHANNEL_ID, "limit": limit, "offset": offset}, timeout=15).json()
-            if not r.get("ok"): break
-            mensagens = r.get("result", {}).get("messages", [])
-            if not mensagens: break
-
-            for msg in mensagens:
-                if "text" in msg and "USER_ID:" in msg["text"]:
-                    try:
-                        linhas = msg["text"].split("\n")
-                        user_id = linhas[0].replace("USER_ID: ", "").strip()
-                        user = linhas[1].replace("USER: ", "").strip()
-                        bot = linhas[2].replace("BOT: ", "").strip()
-                        importante = "IMPORTANTE" in msg["text"] # Flag de like
-                        if not contem_conteudo_bloqueado(user) and not contem_conteudo_bloqueado(bot):
-                            todos_itens.append({"user_id": user_id, "user": user, "bot": bot, "time": msg["date"], "importante": importante})
-                    except: continue
-
-            if len(mensagens) < limit: break
-            offset += limit
-            time.sleep(0.1)
-        except Exception as e:
-            print("Erro ao carregar canal:", e)
-            break
-
-    memory_cache = todos_itens[::-1]
-    salvar_memoria()
-    print(f"Memória carregada: {len(memory_cache)} itens")
-
 def carregar_memoria():
     global memory_cache
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
                 memory_cache = json.load(f)
-        except: memory_cache = []
-    carregar_memoria_do_canal()
+            print(f"Memória carregada do arquivo: {len(memory_cache)} itens")
+        except:
+            memory_cache = []
+            print("Erro ao carregar memoria.json")
+    else:
+        print("Arquivo de memória não existe, começando do zero")
 
-def salvar_no_canal(user_id, user_msg, bot_reply, importante=False):
+def salvar_no_canal(user_id, user_msg, bot_reply, importante=False, chat_id=None):
     if contem_conteudo_bloqueado(user_msg) or contem_conteudo_bloqueado(bot_reply):
         print(f"Mensagem bloqueada, não salva: {user_id}")
         return
@@ -117,10 +81,11 @@ def salvar_no_canal(user_id, user_msg, bot_reply, importante=False):
         print(f"Mensagem repetida, ignorada: {user_id}")
         return
 
-    item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now()), "importante": importante}
+    item = {"user_id": user_id, "user": user_msg, "bot": bot_reply, "time": str(datetime.now()), "importante": importante, "chat_id": chat_id}
     memory_cache.append(item)
-    salvar_memoria()
+    salvar_memoria() # Salva no arquivo primeiro
 
+    # Envia pro canal como backup
     if MEMORY_CHANNEL_ID:
         tag = "\nIMPORTANTE" if importante else ""
         texto = f"USER_ID: {user_id}\nUSER: {user_msg}\nBOT: {bot_reply}{tag}\n---"
@@ -137,11 +102,12 @@ def gerar_resumo_usuario(user_id):
     importantes = [i for i in infos if i.get("importante")]
     normais = [i for i in infos if not i.get("importante")][-15:]
     texto = "\n".join([f"IMPORTANTE: {i['user']}" for i in importantes[-10:]] + [f"Usuário: {i['user']}" for i in normais])
+    if not texto: return ""
     prompt = f"Resuma em 5 linhas o que você sabe sobre esta pessoa. Foque no que está marcado como IMPORTANTE: {texto}"
     resumo = call_groq_api({"messages": [{"role": "user", "content": prompt}]}, model="llama-3.1-8b-instant")
     return f"MEMÓRIA DO USUÁRIO: {resumo}\n" if resumo else ""
 
-carregar_memoria()
+carregar_memoria() # Agora só carrega do arquivo
 
 # --- SUPORTE ---
 def get_user_time(user_id):
@@ -172,11 +138,11 @@ def call_groq_api(payload, model="llama-3.3-70b-versatile", temperature=0.9):
         return call_groq_api(payload, model="llama-3.1-8b-instant", temperature=temperature)
     return None
 
-def groq_chat(user_id, user_msg):
+def groq_chat(user_id, user_msg, chat_id=None):
     if contem_conteudo_bloqueado(user_msg):
         return "Opa, prefiro não falar sobre isso 😅 Bora mudar de assunto?"
 
-    memoria_resumo = gerar_resumo_usuario(user_id)
+    memoria_resumo = gerar_resumo_usuario(user_id) # Agora ele realmente lê do arquivo
     history = conversations.get(user_id, [])
     history.append({"role": "user", "content": user_msg})
     auto_manage_history(user_id)
@@ -193,25 +159,24 @@ def groq_chat(user_id, user_msg):
             }
         ] + history
     }
-    reply = call_groq_api(payload, temperature=0.9) or "Ops, buguei 🤯 tenta de novo aí!" # temperature 0.9 = mais aleatório
+    reply = call_groq_api(payload, temperature=0.9) or "Ops, buguei 🤯 tenta de novo aí!"
 
     if contem_conteudo_bloqueado(reply):
         reply = "Prefiro não entrar nesse assunto 😅 Quer conversar sobre outra coisa?"
 
-    salvar_no_canal(user_id, user_msg, reply)
+    salvar_no_canal(user_id, user_msg, reply, chat_id=chat_id)
     history.append({"role": "assistant", "content": reply})
     conversations[user_id] = history[-HISTORY_LIMIT:]
     return reply
 
 # --- LIDAR COM REAÇÕES/LIKES ---
 def marcar_como_importante(chat_id, message_id):
-    """Procura a última mensagem do bot nesse chat e marca como importante"""
     for item in reversed(memory_cache):
-        if str(item.get('chat_id')) == str(chat_id): # Precisamos salvar chat_id também
+        if str(item.get('chat_id')) == str(chat_id):
             item['importante'] = True
             salvar_memoria()
-            # Reenvia pro canal com tag IMPORTANTE
-            salvar_no_canal(item['user_id'], item['user'], item['bot'], importante=True)
+            salvar_no_canal(item['user_id'], item['user'], item['bot'], importante=True, chat_id=chat_id)
+            print(f"Mensagem marcada como IMPORTANTE: {item['user'][:20]}")
             break
 
 # --- APIs ---
@@ -226,7 +191,7 @@ def send_telegram_message(chat_id, text, reply_to_message_id=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     if reply_to_message_id: payload["reply_to_message_id"] = reply_to_message_id
     r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json=payload, timeout=5)
-    return r.json().get("result", {}).get("message_id") # Retorna o message_id
+    return r.json().get("result", {}).get("message_id")
 
 def auto_post(): pass
 scheduler = BackgroundScheduler()
@@ -279,11 +244,10 @@ def webhook():
 
         if should_reply:
             user_id = message["from"]["id"]
-            reply = groq_chat(user_id, clean_msg)
+            reply = groq_chat(user_id, clean_msg, chat_id)
             msg_id = send_telegram_message(chat_id, reply, message.get("message_id"))
-            # Salva com chat_id pra poder marcar como importante depois
+            # Atualiza o último item com message_id
             if memory_cache:
-                memory_cache[-1]['chat_id'] = chat_id
                 memory_cache[-1]['message_id'] = msg_id
                 salvar_memoria()
 
