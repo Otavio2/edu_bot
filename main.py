@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytz
 
 # ========= CONFIG =========
-BOT_NAME = "Matheus"
+BOT_NAME = "Orbit Alliance"
 CREATOR = "Kleber"
 CREATOR_ID = "8398287578"
 TIMEZONE = "America/Fortaleza"
