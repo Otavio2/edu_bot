@@ -287,7 +287,7 @@ def handle_new_members(msg):
     chat_id=msg["chat"]["id"]; rules=get_group_config(chat_id)
     if not rules.get("welcome"): return
     for member in msg.get("new_chat_members",[]):
-        if member["id"]==BOT_ID: send_message(chat_id,f"🤖 Obrigado por me adicionar! Me promova a *ADM* com permissões de apagar e banir pra eu proteger o grupo. Use /help"); continue
+        if member["id"]==BOT_ID: send_message(chat_id,f"🪐 Orbit Alliance online! Me promova a *ADM* com permissões de apagar e banir pra eu proteger o grupo." Use /help"); continue
         name=member.get("first_name","pessoa")
         txt=rules.get("welcome_msg","👋 Seja bem-vindo(a), {name}!").format(name=name, title=msg["chat"].get("title",""))
         send_message(chat_id,txt)
