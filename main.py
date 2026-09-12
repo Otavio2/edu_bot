@@ -232,25 +232,6 @@ def call_ai(prompt, timeout=7, max_tokens=250):
     return None
 
 
-def call_ai(prompt, timeout=7, max_tokens=250):
-    if not PROVIDERS: return None
-    order=["groq","gemini","openrouter","deepseek"]
-    for prov in order:
-        if prov not in PROVIDERS: continue
-        cfg=PROVIDERS[prov]
-        try:
-            if prov=="gemini":
-                url=f"https://generativelanguage.googleapis.com/v1beta/models/{cfg['models'][0]}:generateContent?key={cfg['key']}"
-                r=requests.post(url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}}, timeout=timeout)
-                if r.status_code==200: return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-            else:
-                headers={"Authorization":f"Bearer {cfg['key']}","Content-Type":"application/json"}
-                payload={"model":cfg["models"][0],"messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":max_tokens}
-                r=requests.post(cfg["endpoint"], json=payload, headers=headers, timeout=timeout)
-                if r.status_code==200: return r.json()["choices"][0]["message"]["content"]
-        except: continue
-    return None
-
 def ai_moderator_classify(text, rules):
     prompt=f"""Você é classificador de moderação. Analise mensagem de grupo Telegram.
 REGRAS ATIVAS: anti_link={rules.get('anti_link')} anti_divulgation={rules.get('anti_divulgation')} modo={rules.get('moderation_mode')}
