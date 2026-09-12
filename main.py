@@ -451,16 +451,14 @@ def resolve_target(msg, args):
         return str(msg["reply_to_message"]["from"]["id"])
     if args and str(args[0]).isdigit():
         return str(args[0])
-    # Se for @username, tenta buscar ID no contexto recente
     txt = msg.get("text","") or msg.get("caption","") or ""
     m = re.search(r"@(\w+)", txt)
     if m:
         uname = m.group(1).lower()
-        # procura nos últimos 5 msgs quem tem esse username
         for ctx in list(mem_context.get(str(msg["chat"]["id"]), []))[-10:]:
             if uname in ctx.get("text","").lower():
                 return ctx.get("uid")
-        return None # não tenta banir por username, evita erro
+        return None
     return None
 
 def process_update(update):
@@ -596,7 +594,7 @@ def process_update(update):
             jbs=f"🟢 {int(last_backup)}" if JSONBIN_URL else "⚪ OFF"
             send(chat_id,f"*Orbit V15 HANSEL*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\nIA local sempre ON", mid); return
         if cmd in ("/start","/help"):
-            send(chat_id,"*Orbit V15 IA MAX - Hansel Structure*\nCmd: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 IA natural: 'bane esse cara' respondendo (só ADM)\nIA: divulgação, toxic, similaridade, briga, preditiva", mid); return
+            send(chat_id,"🚀 *Orbit IA MAX - Criador: Kʆɛɓɛʀ*\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 IA natural: \"bane esse cara\" respondendo (apenas ADM)\nIA: divulgação, toxicidade, similaridade, briga, preditiva.", mid); return
 
     if uid==BOT_ID: return
     if is_admin(chat_id,uid): return
