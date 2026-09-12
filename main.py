@@ -1,7 +1,7 @@
-# ORBIT ALLIANCE V15 - HANSEL STRUCTURE + IA ADM MAX - PROD READY
+# ORBIT ALLIANCE V16 - HANSEL + IA ADM MAX + PV LIVRE + LEARNING BEHAVIOR
 import os, re, json, time, sqlite3, logging, requests, base64, hashlib, shutil, threading, difflib, random
 from datetime import datetime, timezone
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 from flask import Flask, request, abort
 from concurrent.futures import ThreadPoolExecutor
 import pytz
@@ -39,7 +39,6 @@ last_backup = 0
 BOT_ID = None
 BOT_USERNAME = None
 
-# ===== HANSEL STRUCTURE - PROVIDER ROTATIVO =====
 PROVIDERS_RAW = {
     "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1", "format": "openai", "timeout": 5},
     "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "format": "gemini", "timeout": 6},
@@ -74,7 +73,6 @@ def build_providers_dynamic():
     return provs
 PROVIDERS = build_providers_dynamic()
 ORDER_PREFERENCE = ["groq","gemini","cerebras"]
-AI_PRIORITY = [p for p in ORDER_PREFERENCE if p in PROVIDERS]
 
 def is_model_blocked(prov, model_id):
     with BLACKLIST_LOCK:
@@ -111,7 +109,6 @@ VALID_AUTO = {"DELETE","WARN","MUTE","KICK","BAN"}
 VALID_MODES = {"observer","moderate","strict","auto"}
 VALID_NIGHT = {"silent","strict"}
 
-# ===== IA HEURÍSTICA LOCAL =====
 DIVULGA_WORDS = {"entra","ganhe","lucro","renda","grátis","gratis","promoção","promocao","vagas","dinheiro","pix","aposte","cassino","tigrinho","sorteio","grupo novo"}
 TOXIC_WORDS = {"lixo","burro","otario","otário","idiota","fdp","vsf","arrombado","desgraça","vai se foder"}
 INTENT_BAN = ["bane","banir","tira esse","remove esse","expulsa","manda embora","bana","bani"]
@@ -206,6 +203,7 @@ def get_db():
     c.execute("PRAGMA journal_mode=WAL;")
     c.execute("PRAGMA busy_timeout=5000;")
     return c
+
 def init_db():
     c = get_db()
     c.executescript("""
@@ -216,14 +214,19 @@ def init_db():
     CREATE TABLE IF NOT EXISTS processed_updates(update_id INTEGER PRIMARY KEY,processed_at TEXT);
     CREATE TABLE IF NOT EXISTS system_errors(id INTEGER PRIMARY KEY AUTOINCREMENT,component TEXT,error TEXT,chat_id TEXT,update_id INTEGER,created_at TEXT);
     CREATE TABLE IF NOT EXISTS backup_meta(rowid INTEGER PRIMARY KEY,last_at TEXT,last_status TEXT,checksum TEXT);
+    CREATE TABLE IF NOT EXISTS group_peak(chat_id TEXT, hour INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY(chat_id,hour));
+    CREATE TABLE IF NOT EXISTS user_reputation(chat_id TEXT, user_id TEXT, spam_score INTEGER DEFAULT 0, toxic_score INTEGER DEFAULT 0, last_seen TEXT, PRIMARY KEY(chat_id,user_id));
+    CREATE TABLE IF NOT EXISTS group_toxic_words(chat_id TEXT, word TEXT, count INTEGER DEFAULT 1, PRIMARY KEY(chat_id,word));
     """)
     c.commit(); c.close()
 init_db()
+
 def log_error(comp, err, chat_id=None, upd=None):
     try:
         safe = re.sub(r"bot\d+:[\w-]+|sk-[\w-]+|x-master-key|Bearer [\w-]+","[REDACTED]",str(err),flags=re.I)[:800]
         c=get_db(); c.execute("INSERT INTO system_errors(component,error,chat_id,update_id,created_at) VALUES(?,?,?,?,?)",(comp,safe,str(chat_id) if chat_id else None,upd,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
     except: pass
+
 def parse_bool(v):
     if isinstance(v,bool): return v
     s=str(v).lower().strip()
@@ -353,7 +356,62 @@ def execute_action(chat_id,action,target_id=None,reason="",message_id=None,admin
     elif action=="UNPIN": res=telegram_req("unpinChatMessage",{"chat_id":chat_id,"message_id":message_id})
     success=bool(res.get("ok"))
     log_action(chat_id,target_id,action,reason[:200],message_id,source,success,admin_id)
+    if success and action in ("DELETE","MUTE","BAN") and target_id:
+        try:
+            with db_lock:
+                c=get_db()
+                c.execute("INSERT INTO user_reputation(chat_id,user_id,spam_score,last_seen) VALUES(?,?,1,?) ON CONFLICT(chat_id,user_id) DO UPDATE SET spam_score=spam_score+1, last_seen=?",(str(chat_id),str(target_id),datetime.now(timezone.utc).isoformat(),datetime.now(timezone.utc).isoformat()))
+                c.commit(); c.close()
+        except: pass
     return {"success":success,"error":None if success else str(res)[:200],"action":action}
+
+# ===== LEARNING BEHAVIOR MODULE =====
+def learn_peak_and_check(chat_id):
+    try:
+        hour = datetime.now(TZ).hour
+        with db_lock:
+            c=get_db()
+            c.execute("INSERT INTO group_peak(chat_id,hour,count) VALUES(?,?,1) ON CONFLICT(chat_id,hour) DO UPDATE SET count=count+1",(str(chat_id),hour))
+            rows=c.execute("SELECT count FROM group_peak WHERE chat_id=?",(str(chat_id),)).fetchall()
+            c.commit(); c.close()
+        if len(rows) < 5: return False
+        counts=[r["count"] for r in rows]
+        avg=sum(counts)/len(counts)
+        c=get_db(); r=c.execute("SELECT count FROM group_peak WHERE chat_id=? AND hour=?",(str(chat_id),hour)).fetchone(); c.close()
+        cur = r["count"] if r else 0
+        return cur > avg*1.5 and cur > 10
+    except: return False
+
+def is_spammer_recurrente(chat_id, user_id):
+    try:
+        c=get_db(); row=c.execute("SELECT spam_score FROM user_reputation WHERE chat_id=? AND user_id=?",(str(chat_id),str(user_id))).fetchone(); c.close()
+        return row and row["spam_score"] >= 3
+    except: return False
+
+def check_group_toxic_word(chat_id, text):
+    try:
+        tl=text.lower()
+        c=get_db(); rows=c.execute("SELECT word,count FROM group_toxic_words WHERE chat_id=? AND count>=3 ORDER BY count DESC LIMIT 20",(str(chat_id),)).fetchall(); c.close()
+        for r in rows:
+            if r["word"] in tl:
+                return r["word"], r["count"]
+        return None,0
+    except: return None,0
+
+def learn_toxic_words_from_fight(chat_id, texts):
+    try:
+        words=[]
+        for t in texts:
+            words+=re.findall(r"\b\w{4,}\b", t.lower())
+        common=[w for w,c in Counter(words).items() if c>=2 and w not in TOXIC_WORDS and len(w)>3][:5]
+        if not common: return
+        with db_lock:
+            c=get_db()
+            for w in common:
+                c.execute("INSERT INTO group_toxic_words(chat_id,word,count) VALUES(?,?,1) ON CONFLICT(chat_id,word) DO UPDATE SET count=count+1",(str(chat_id),w))
+            c.commit(); c.close()
+    except: pass
+
 def restore_safe():
     if not JSONBIN_URL: return
     if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH) > 1024:
@@ -433,7 +491,7 @@ def webhook():
 def health():
     try: c=get_db(); c.execute("SELECT 1").fetchone(); c.close(); db="🟢"
     except: db="🔴"
-    return {"status":"Orbit V15 HANSEL+IA","bot_id":BOT_ID,"db":db,"providers": get_dynamic_priority(),"last_backup":last_backup}
+    return {"status":"Orbit V16 LEARNING+PV LIVRE","bot_id":BOT_ID,"db":db,"providers": get_dynamic_priority(),"last_backup":last_backup}
 
 @app.route("/setwebhook", methods=["GET"])
 def setwebhook():
@@ -480,6 +538,38 @@ def process_update(update):
 
     mem_context[str(chat_id)].append({"uid":str(uid),"text":text,"time":time.time()})
 
+    if "new_chat_members" in msg:
+        if cfg.get("welcome"):
+            for u in msg["new_chat_members"]:
+                if str(u.get("id")) == str(BOT_ID): continue
+                nome = u.get("first_name","")
+                txt_w = cfg.get("welcome_msg","Bem-vindo {name}! 👋")
+                try: txt_w = txt_w.format(name=nome)
+                except: pass
+                send(chat_id, txt_w)
+        return
+    if "left_chat_member" in msg:
+        if cfg.get("goodbye"):
+            left = msg["left_chat_member"]
+            nome = left.get("first_name","Alguém")
+            txt_b = cfg.get("goodbye_msg","{name} saiu. 👋")
+            try: txt_b = txt_b.format(name=nome)
+            except: pass
+            send(chat_id, txt_b)
+        return
+
+    is_peak = learn_peak_and_check(chat_id) if chat_type!="private" else False
+
+    if chat_type!="private" and not is_admin(chat_id,uid):
+        if is_spammer_recurrente(chat_id, uid):
+            execute_action(chat_id,"MUTE",uid,"spammer recorrente - observação",mid,source="AUTO",confidence=0.92)
+            send(chat_id,f"🚨 {uid} em observação - mutado automaticamente.")
+            return
+        word,cnt = check_group_toxic_word(chat_id, text)
+        if word:
+            execute_action(chat_id,"DELETE",uid,f"palavra tóxica aprendida [{word}] x{cnt}",mid,source="AUTO",confidence=0.88)
+            return
+
     if cfg.get("night_mode"):
         ns,ne=cfg.get("night_start","22:00"),cfg.get("night_end","06:00")
         if valid_hhmm(ns) and valid_hhmm(ne):
@@ -502,10 +592,13 @@ def process_update(update):
 
     if text.startswith("/"):
         parts=text.strip().split(); cmd=parts[0].split("@")[0].lower(); args=parts[1:] if len(parts)>1 else []
-        if chat_type=="private" and cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/warnings"):
-            send(chat_id,"⚠️ Só em grupos."); return
-        if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink","/resetai"):
-            if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM."); return
+        if chat_type=="private":
+            if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/warnings","/logs"):
+                send(chat_id,"⚠️ Esse comando só funciona em grupos. Me adicione num grupo.", mid); return
+        else:
+            if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink","/resetai"):
+                if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM."); return
+
         if cmd=="/ban":
             target=resolve_target(msg,args)
             if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /ban", mid); return
@@ -592,9 +685,19 @@ def process_update(update):
             try: c=get_db(); c.execute("SELECT 1").fetchone(); c.close(); dbs="🟢"
             except: dbs="🔴"
             jbs=f"🟢 {int(last_backup)}" if JSONBIN_URL else "⚪ OFF"
-            send(chat_id,f"*Orbit V15 HANSEL*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\nIA local sempre ON", mid); return
+            try:
+                c=get_db()
+                peak=c.execute("SELECT hour,count FROM group_peak WHERE chat_id=? ORDER BY count DESC LIMIT 1",(str(chat_id),)).fetchone()
+                rep=c.execute("SELECT COUNT(*) as c FROM user_reputation WHERE chat_id=? AND spam_score>=3",(str(chat_id),)).fetchone()
+                tox=c.execute("SELECT word,count FROM group_toxic_words WHERE chat_id=? ORDER BY count DESC LIMIT 3",(str(chat_id),)).fetchall()
+                c.close()
+                peak_txt=f"{peak['hour']}h ({peak['count']} msgs)" if peak else "aprendendo"
+                rep_txt=rep["c"] if rep else 0
+                tox_txt=", ".join([f"{r['word']}({r['count']})" for r in tox]) if tox else "nenhuma"
+            except: peak_txt="erro"; rep_txt=0; tox_txt="erro"
+            send(chat_id,f"*Orbit V16 LEARNING*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\n\n📊 *Aprendizado:*\nPico: {peak_txt} {'🔥 RÍGIDO' if is_peak else ''}\nObservação: {rep_txt} users\nPalavras tóxicas do grupo: {tox_txt}", mid); return
         if cmd in ("/start","/help"):
-            send(chat_id,"🚀 *Orbit IA MAX - Criador: Kʆɛɓɛʀ*\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 IA natural: \"bane esse cara\" respondendo (apenas ADM)\nIA: divulgação, toxicidade, similaridade, briga, preditiva.", mid); return
+            send(chat_id,"🚀 *Orbit V16 - LEARNING*\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 *Novidades V16:*\n• Aprende horário de pico e fica mais rígido\n• Spammer recorrente entra em observação (3 deletes = mute auto)\n• Aprende palavras que causam briga naquele grupo e apaga antes\n\nPV livre pra geral ✅", mid); return
 
     if uid==BOT_ID: return
     if is_admin(chat_id,uid): return
@@ -633,19 +736,22 @@ def process_update(update):
     if ai_res.get("toxic",0) >= 0.7:
         r=execute_action(chat_id,"DELETE",uid,f"toxico IA {ai_res['toxic']:.2f}",mid,source="AUTO",confidence=ai_res['toxic'])
         if ai_res.get("toxic",0)>=0.9: execute_action(chat_id,"MUTE",uid,"toxico grave",mid,source="AUTO",confidence=ai_res['toxic'])
-        mem_fight[str(chat_id)].append((str(uid),time.time(),ai_res.get("toxic",0)))
+        mem_fight[str(chat_id)].append((str(uid),time.time(),ai_res.get("toxic",0),text))
         recent=[f for f in mem_fight[str(chat_id)] if time.time()-f[1]<30]
-        if len(recent)>=2 and len(set(u for u,_,_ in recent))>=2 and all(s>=0.7 for _,_,s in recent):
-            for u,_,_ in recent: execute_action(chat_id,"MUTE",u,"briga IA",None,source="AUTO",confidence=0.85)
-            send(chat_id,"🤖 IA: briga detectada, calma galera. Mute 10min.")
+        if len(recent)>=2 and len(set(u for u,_,_,_ in recent))>=2 and all(s>=0.7 for _,_,_,s in recent):
+            learn_toxic_words_from_fight(chat_id, [t for _,_,_,t in recent])
+            for u,_,_,_ in recent: execute_action(chat_id,"MUTE",u,"briga IA - aprendizado",None,source="AUTO",confidence=0.85)
+            send(chat_id,"🤖 IA: briga detectada, calma galera. Mute 10min. Aprendi palavras dessa briga.")
             mem_fight[str(chat_id)].clear()
         return
 
     if cfg.get("anti_flood"):
         dq=mem_flood[(str(chat_id),str(uid))]; now=time.time(); dq.append(now)
         while dq and now-dq[0]>cfg.get("flood_window",15): dq.popleft()
-        if len(dq)>cfg.get("flood_limit",7):
-            r=execute_action(chat_id,"MUTE",uid,"flood",mid,source="AUTO",confidence=0.9)
+        limit = cfg.get("flood_limit",7)
+        if is_peak: limit = max(3, limit-3)
+        if len(dq)>limit:
+            r=execute_action(chat_id,"MUTE",uid,f"flood pico={is_peak}",mid,source="AUTO",confidence=0.9)
             if r["success"]: mem_flood[(str(chat_id),str(uid))].clear()
             return
     if cfg.get("anti_mention"):
