@@ -385,43 +385,48 @@ def process_update(update):
         cmd=parts[0].split("@")[0].lower()
         args=parts[1:] if len(parts)>1 else []
 
-        if chat_type=="private" and cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin"):
-            send(chat_id,"⚠️ Esse comando só funciona em grupos.")
-            return
+        if chat_type=="private" and cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/warnings"):
+            send(chat_id,"⚠️ Esse comando só funciona em grupos."); return
         if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink"):
             if not is_admin(chat_id,uid):
-                send(chat_id,"⚠️ Só administradores podem usar.")
-                return
+                send(chat_id,"⚠️ Só administradores podem usar."); return
+
         if cmd=="/ban":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ Responda com /ban", mid); return
             r=execute_action(chat_id,"BAN",target,f"ban por {uid}",None,admin_id=uid,source="COMMAND",confidence=1.0)
             send(chat_id,f"🚫 Banido {target}" if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/unban":
             target=resolve_target(msg,args) or (args[0] if args else None)
             if not target or not target.isdigit(): send(chat_id,"⚠️ /unban <id>", mid); return
             r=execute_action(chat_id,"UNBAN",target,"unban",None,admin_id=uid,source="COMMAND")
             send(chat_id,"✅ Desbanido." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/kick":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ Responda com /kick", mid); return
             r=execute_action(chat_id,"KICK",target,f"kick por {uid}",None,admin_id=uid,source="COMMAND")
             send(chat_id,"👢 Expulso." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/mute":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ Responda com /mute", mid); return
             r=execute_action(chat_id,"MUTE",target,f"mute por {uid}",None,admin_id=uid,source="COMMAND")
             send(chat_id,"🔇 Mutado." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/unmute":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ Responda com /unmute", mid); return
             r=execute_action(chat_id,"UNMUTE",target,"unmute",None,admin_id=uid,source="COMMAND")
             send(chat_id,"🔊 Desmutado." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/delete":
             if not msg.get("reply_to_message"): send(chat_id,"⚠️ Responda com /delete", mid); return
             r=execute_action(chat_id,"DELETE",None,"delete",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
             if not r["success"]: send(chat_id,f"❌ {r['error']}")
             return
+
         if cmd=="/warn":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ Responda com /warn", mid); return
@@ -431,36 +436,46 @@ def process_update(update):
                 cnt=(row["count"]+1) if row else 1
                 c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(target),cnt,f"warn por {uid}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
             log_action(chat_id,target,"WARN",f"warn por {uid}",mid,"COMMAND",True,uid)
-            send(chat_id,f"⚠️ {target} {cnt}/{get_cfg(chat_id).get('warning_limit',3)} warns"); return
+            send(chat_id,f"⚠️ {target} {cnt}/{get_cfg(chat_id).get('warning_limit',3)} warns", mid); return
+
         if cmd=="/unwarn":
             target=resolve_target(msg,args)
             if not target: send(chat_id,"⚠️ /unwarn", mid); return
             with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))); c.commit(); c.close()
             send(chat_id,f"✅ Warnings de {target} resetados.", mid); return
+
         if cmd=="/warnings":
             target=resolve_target(msg,args) or str(uid)
-            c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone(); c.close()
-            send(chat_id,f"✅ {target} sem warns" if not row else f"⚠️ {target}: {row['count']} warns", mid); return
+            c=get_db(); row=c.execute("SELECT count,last_reason FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone(); c.close()
+            if not row: send(chat_id,f"✅ {target} sem warns", mid)
+            else: send(chat_id,f"⚠️ {target}: {row['count']} warns - {row['last_reason'][:100]}", mid)
+            return
+
         if cmd=="/resetwarnings":
             with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close()
-            send(chat_id,"✅ Warnings resetados", mid); return
+            send(chat_id,"✅ Todos warnings resetados", mid); return
+
         if cmd=="/allowlink":
             if not args: send(chat_id,"Use: /allowlink dominio.com", mid); return
             dom=args[0].lower().strip()
             cfg2=get_cfg(chat_id); cur=cfg2.get("allowed_links",""); lista=[a.strip() for a in cur.split(",") if a.strip()]
             if dom not in lista: lista.append(dom); set_cfg(chat_id,"allowed_links",",".join(lista))
             send(chat_id,f"✅ {dom} permitido.", mid); return
+
         if cmd=="/pin":
             if not msg.get("reply_to_message"): send(chat_id,"Responda com /pin", mid); return
             r=execute_action(chat_id,"PIN",None,"pin",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
             send(chat_id,"📌 Fixado." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/unpin":
             r=execute_action(chat_id,"UNPIN",None,"unpin",None,admin_id=uid,source="COMMAND")
             send(chat_id,"📌 Desfixado." if r["success"] else f"❌ {r['error']}", mid); return
+
         if cmd=="/logs":
             c=get_db(); rows=c.execute("SELECT action,reason,created_at FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT 20",(str(chat_id),)).fetchall(); c.close()
             out="\n".join([f"{r['created_at'][11:16]} {r['action']} {r['reason'][:30]}" for r in rows]) if rows else "Sem logs"
             send(chat_id,out[:3900], mid); return
+
         if cmd=="/status":
             try: tg=telegram_req("getMe"); tgs="🟢 ONLINE" if tg.get("ok") else "🔴 OFF"
             except: tgs="🔴 ERRO"
@@ -468,23 +483,30 @@ def process_update(update):
             except: dbs="🔴 OFF"
             jbs=f"🟢 {int(last_backup)}" if JSONBIN_URL else "⚪ OFF"
             cfg2=get_cfg(chat_id)
-            send(chat_id,f"*{BOT_USERNAME or 'Orbit'} V13*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nPerm del:{'✅' if bot_can(chat_id,'can_delete_messages') else '❌'} res:{'✅' if bot_can(chat_id,'can_restrict_members') else '❌'}\nModo:{cfg2.get('moderation_mode')} AntiLink:{cfg2.get('anti_link')}", mid); return
+            send(chat_id,f"*{BOT_USERNAME or 'Orbit'} V13*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nModo:{cfg2.get('moderation_mode')} AntiLink:{cfg2.get('anti_link')}", mid); return
+
         if cmd in ("/start","/help"):
-            send(chat_id,"/ban /kick /mute /unmute /delete /warn /allowlink /pin /logs /status", mid); return
+            send(chat_id,"*Orbit V13*\n/ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status", mid); return
 
     if uid==BOT_ID: return
     if is_admin(chat_id,uid): return
     if not text: return
+
     if is_edited:
         c=get_db(); already=c.execute("SELECT id FROM moderation_logs WHERE chat_id=? AND message_id=? AND success=1 LIMIT 1",(str(chat_id),str(mid))).fetchone(); c.close()
         if already: return
+
     if cfg.get("anti_link"):
         ok,dom=is_link_allowed(text,cfg.get("allowed_links",""))
         if not ok:
             r=execute_action(chat_id,"DELETE",uid,f"link {dom}",mid,source="AUTO",confidence=0.99)
             if r["success"]:
-                with db_lock: c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone(); cnt=(row["count"]+1) if row else 1; c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"link {dom}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
+                with db_lock:
+                    c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
+                    cnt=(row["count"]+1) if row else 1
+                    c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"link {dom}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
             return
+
     if cfg.get("anti_flood"):
         dq=mem_flood[(str(chat_id),str(uid))]; now=time.time(); dq.append(now)
         while dq and now-dq[0]>cfg.get("flood_window",15): dq.popleft()
@@ -492,14 +514,17 @@ def process_update(update):
             r=execute_action(chat_id,"MUTE",uid,f"flood",mid,source="AUTO",confidence=0.9)
             if r["success"]: mem_flood[(str(chat_id),str(uid))].clear()
             return
+
     if cfg.get("anti_mention"):
         mentions=len(re.findall(r"@\w+",text)); mw=mem_mention[(str(chat_id),str(uid))]; mw.append((time.time(),mentions))
         now=time.time()
         while mw and now-mw[0][0]>30: mw.popleft()
         total=sum(m for _,m in mw)
         if mentions>=5 or total>=8:
-            execute_action(chat_id,"DELETE",uid,f"mention {mentions}",mid,source="AUTO",confidence=0.9); return
+            execute_action(chat_id,"DELETE",uid,f"mention {mentions}",mid,source="AUTO",confidence=0.9)
+            return
 
 restore_safe()
+
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=PORT)
