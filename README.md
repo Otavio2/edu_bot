@@ -1,36 +1,33 @@
-# 🤖 Matheus Bot - SuperBot Telegram + IA Gratuita
+# 🚀 Orbit Alliance V16 - HANSEL + IA ADM MAX + PV LIVRE + LEARNING BEHAVIOR
 
-Bot de Telegram com IA usando `openrouter/free`. Roda 24/7 no Render, responde texto e imagem, tem memória e funciona em grupo e PV.
+> ----- Criador: Kʆɛɓɛʀ -----
 
-Criado por: **Kleber**  
-Modelo: **Matheus v2.4**
+Bot de moderação autônoma para Telegram com IA real, sistema de aprendizado por grupo e infraestrutura anti-queda.
 
-## ✨ Funcionalidades
+## ✨ Novidades V16 - LEARNING
 
-- **100% Gratuito**: Usa `openrouter/free`. Zero custo.
-- **Memória**: Lembra das últimas 10 msgs no PV e 6 msgs por grupo
-- **Modo Hansel Inteligente**: Em grupo só responde se for marcado, falar o nome ou responder ele
-- **Visão**: Analisa e descreve fotos enviadas
-- **Comandos**: /start /ajuda /limpar /status /hora /admin
-- **Anti-spam**: Cooldown de 2s por usuário
-- **Fuso Horário**: America/Fortaleza - Sobral/CE
-- **Robusto**: Retry automático, anti-duplicado, logs completos
+A IA agora aprende com o próprio grupo:
 
-## 🚀 Deploy no Render
+- **Horário de Pico:** Conta msgs por hora (`group_peak`). Se detectar pico > 1.5x média, fica mais rígido (flood_limit cai de 7 para 3).
+- **Spammer Recorrente:** Usuário que levou 3+ deletes/mutes entra em observação (`user_reputation`). Na próxima msg já entra mutado automático.
+- **Palavras Tóxicas do Grupo:** Detecta briga (2+ tóxicos em 30s), extrai palavras em comum e salva em `group_toxic_words`. Da próxima vez apaga antes mesmo da IA geral pegar.
 
-### 1. Requisitos
-- Conta no Render.com
-- Bot criado no @BotFather do Telegram
-- Conta na OpenRouter.ai com API Key
+## 🤖 IA
 
-### 2. Variáveis de Ambiente
-No Render, vá em `Environment` e adicione:
+- **Providers:** Groq, Gemini, Cerebras com fallback automático
+- **Blacklist inteligente:** Modelo/provedor com erro é bloqueado temporariamente
+- **Scores locais:** Se IA offline, usa `ai_toxic_score`, `ai_divulgacao_score`, `ai_similarity_score`
+- **Intenção PT:** Entende "cala a boca", "bane esse", "expulsa" em português
 
-| Variável | Valor | Onde pegar |
-| --- | --- | --- |
-| `TELEGRAM_TOKEN` | `12345:ABC...` | @BotFather |
-| `OPENROUTER_API_KEY` | `sk-or-v1-...` | https://openrouter.ai/keys |
+Comando `/resetai` limpa blacklist e recarrega providers.
 
-### 3. Config do Render
-1.  **New +** > **Web Service**
-2.  **Connect GitHub** e selecione o repo
+## 🛡️ Moderação
+
+- **Anti-Link:** Bloqueia domínios não permitidos (`allowed_links`)
+- **Anti-Divulgação:** IA detecta promo, cassino, pix, etc
+- **Anti-Spam:** Similaridade > 85% com últimas 5 msgs
+- **Anti-Flood:** Limite por janela (com modo pico rígido)
+- **Anti-Mention:** 5+ @ por msg ou 8 em 30s
+- **Night Mode:** `silent` (apaga tudo) ou `strict` (só msg longa)
+
+## 📜 Comandos
