@@ -189,15 +189,48 @@ def get_warnings(chat_id, uid):
 def clear_warnings(chat_id, uid): conn=get_db(); conn.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))); conn.commit(); conn.close(); executor.submit(backup_db_to_jsonbin)
 
 # ========= AI ENGINE V10.2 =========
-PROVIDERS={}
+PROVIDERS_RAW = {
+    "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1/chat/completions", "format": "openai", "timeout": 6},
+    "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "format": "gemini", "timeout": 8},
+    "cerebras": {"key_env": "CEREBRAS_API_KEY", "endpoint": "https://api.cerebras.ai/v1/chat/completions", "format": "openai", "timeout": 6},
+    "openrouter": {"key_env": "OPENROUTER_API_KEY", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "format": "openai", "timeout": 8},
+}
+
+FALLBACK_MODELS = {
+    "groq": ["llama-3.3-70b-versatile","llama-3.1-8b-instant"],
+    "gemini": ["gemini-2.0-flash","gemini-1.5-flash"],
+    "cerebras": ["llama-3.3-70b","llama3.1-8b"],
+    "openrouter": ["meta-llama/llama-3.1-8b-instruct:free"],
+}
+
 def build_providers():
     m={}
-    if os.getenv("GROQ_API_KEY"): m["groq"]={"key":os.getenv("GROQ_API_KEY"),"endpoint":"https://api.groq.com/openai/v1/chat/completions","models":["llama-3.3-70b-versatile","llama-3.1-8b-instant"]}
-    if os.getenv("GEMINI_API_KEY"): m["gemini"]={"key":os.getenv("GEMINI_API_KEY"),"endpoint":"gemini","models":["gemini-2.0-flash","gemini-1.5-flash"]}
-    if os.getenv("OPENROUTER_API_KEY"): m["openrouter"]={"key":os.getenv("OPENROUTER_API_KEY"),"endpoint":"https://openrouter.ai/api/v1/chat/completions","models":["meta-llama/llama-3.1-8b-instruct:free","openai/gpt-oss-20b:free"]}
-    if os.getenv("DEEPSEEK_API_KEY"): m["deepseek"]={"key":os.getenv("DEEPSEEK_API_KEY"),"endpoint":"https://api.deepseek.com/chat/completions","models":["deepseek-chat"]}
+    for name,cfg in PROVIDERS_RAW.items():
+        key=os.getenv(cfg["key_env"])
+        if key: m[name]=cfg
     return m
 PROVIDERS=build_providers()
+
+def call_ai(prompt, timeout=7, max_tokens=250):
+    if not PROVIDERS: return None
+    for prov_name in ["groq","cerebras","gemini","openrouter"]:
+        if prov_name not in PROVIDERS: continue
+        cfg=PROVIDERS[prov_name]
+        key=os.getenv(cfg["key_env"])
+        for model in FALLBACK_MODELS.get(prov_name,[]):
+            try:
+                if cfg["format"]=="gemini":
+                    url=f"{cfg['endpoint']}/models/{model}:generateContent?key={key}"
+                    r=requests.post(url, json={"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"maxOutputTokens":max_tokens}}, timeout=timeout)
+                    if r.status_code==200: return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                else:
+                    headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
+                    payload={"model":model,"messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":max_tokens}
+                    r=requests.post(cfg["endpoint"], json=payload, headers=headers, timeout=timeout)
+                    if r.status_code==200: return r.json()["choices"][0]["message"]["content"]
+            except: continue
+    return None
+
 
 def call_ai(prompt, timeout=7, max_tokens=250):
     if not PROVIDERS: return None
