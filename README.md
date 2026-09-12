@@ -1,10 +1,10 @@
-# 🚀 Orbit Alliance V16 - HANSEL + IA ADM MAX + PV LIVRE + LEARNING BEHAVIOR
+# 🚀 Orbit Alliance IA ADM MAX + LEARNING BEHAVIOR
 
 > ----- Criador: Kʆɛɓɛʀ -----
 
 Bot de moderação autônoma para Telegram com IA real, sistema de aprendizado por grupo e infraestrutura anti-queda.
 
-## ✨ Novidades V16 - LEARNING
+## ✨ Novidades - LEARNING
 
 A IA agora aprende com o próprio grupo:
 
