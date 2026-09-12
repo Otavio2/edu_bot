@@ -14,7 +14,7 @@ TIMEZONE = "America/Fortaleza"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN: raise RuntimeError("TELEGRAM_TOKEN não setado")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-DATABASE_PATH = os.getenv("DATABASE_PATH", "matheus.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "Orbit.db")
 TZ = pytz.timezone(TIMEZONE)
 
 # --- JSONBIN PERSISTENTE ---
