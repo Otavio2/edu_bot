@@ -1,4 +1,4 @@
-# main.py V11.3 ADM COMPLETO + IA TOTAL + MODO NOTURNO DUAL + JSONBIN
+# main.py V11.3 ADM COMPLETO + IA TOTAL + MODO NOTURNO DUAL + JSONBIN - FINAL CORRIGIDO
 import os, re, time, json, sqlite3, logging, requests, random, base64
 from datetime import datetime, timezone
 from collections import defaultdict, deque
@@ -87,7 +87,6 @@ def init_database():
     CREATE TABLE IF NOT EXISTS mention_control (chat_id TEXT, user_id TEXT, timestamps TEXT, PRIMARY KEY(chat_id, user_id));
     """)
     conn.commit(); conn.close()
-    # tenta adicionar colunas novas se banco já existe
     try:
         conn=get_db()
         for col in ["night_mode INTEGER DEFAULT 0", "night_mode_type TEXT DEFAULT 'silent'", "night_start TEXT DEFAULT '22:00'", "night_end TEXT DEFAULT '06:00'"]:
@@ -188,7 +187,7 @@ def get_warnings(chat_id, uid):
     conn=get_db(); row=conn.execute("SELECT * FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone(); conn.close(); return dict(row) if row else {"count":0}
 def clear_warnings(chat_id, uid): conn=get_db(); conn.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))); conn.commit(); conn.close(); executor.submit(backup_db_to_jsonbin)
 
-# ========= AI ENGINE V10.2 =========
+# ========= AI ENGINE V12 - PROVIDERS_RAW + FALLBACK =========
 PROVIDERS_RAW = {
     "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1/chat/completions", "format": "openai", "timeout": 6},
     "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "format": "gemini", "timeout": 8},
@@ -231,13 +230,11 @@ def call_ai(prompt, timeout=7, max_tokens=250):
             except: continue
     return None
 
-
 def ai_moderator_classify(text, rules):
     prompt=f"""Você é classificador de moderação. Analise mensagem de grupo Telegram.
 REGRAS ATIVAS: anti_link={rules.get('anti_link')} anti_divulgation={rules.get('anti_divulgation')} modo={rules.get('moderation_mode')}
 MENSAGEM: "{text[:600]}"
 Responda SOMENTE JSON: {{"category":"spam|divulgacao|link|ofensa|normal","confidence":0.0-1.0,"action":"IGNORE|DELETE|WARN|MUTE|BAN","reason":"motivo_curto"}}
-Regras: se normal, action=IGNORE confidence <0.65. Se divulgação de grupo/canal/venda, category=divulgacao. Se link suspeito, category=link. NÃO invente.
 """
     raw=call_ai(prompt, max_tokens=180)
     if not raw: return {"category":"normal","confidence":0.4,"action":"IGNORE","reason":"ia_off"}
@@ -245,47 +242,16 @@ Regras: se normal, action=IGNORE confidence <0.65. Se divulgação de grupo/cana
         m=re.search(r"\{.*\}", raw, re.DOTALL)
         if not m: return {"category":"normal","confidence":0.4,"action":"IGNORE","reason":"parse_fail"}
         data=json.loads(m.group(0))
-        if data.get("action") not in ["IGNORE","DELETE","WARN","MUTE","KICK","BAN","NOTIFY_ADMIN"]: data["action"]="IGNORE"
+        if data.get("action") not in ["IGNORE","DELETE","WARN","MUTE","KICK","BAN"]: data["action"]="IGNORE"
         data["confidence"]=max(0.0,min(1.0,float(data.get("confidence",0.5))))
         return data
     except: return {"category":"normal","confidence":0.4,"action":"IGNORE","reason":"json_fail"}
 
 def ai_natural_config(text):
     prompt=f"""Você é tradutor de comandos de BOT ADM. Converta pedido do ADM em JSON.
-
 Pedido: "{text}"
-
-REGRAS:
-- welcome (boas vindas) -> true/false
-- goodbye (despedida) -> true/false
-- anti_link -> true/false
-- anti_spam -> true/false
-- anti_flood -> true/false
-- anti_mention -> true/false
-- anti_divulgation -> true/false
-- night_mode -> true/false
-- night_mode_type -> "silent" (silencioso) / "strict" (rigoroso)
-- moderation_mode -> "observer"/"moderate"/"strict"/"auto"
-- warning_limit -> número
-- flood_limit -> número
-- flood_window -> número segundos
-- welcome_msg -> texto ex: "Bem vindo {{name}}!"
-- goodbye_msg -> texto
-- allowed_links -> domínio ex: youtube.com
-- night_start -> hora ex: "22:00"
-- night_end -> hora ex: "06:00"
-
-Exemplos:
-"ativa o anti link" -> {{"rule":"anti_link","value":true}}
-"desliga boas vindas" -> {{"rule":"welcome","value":false}}
-"coloca em modo auto" -> {{"rule":"moderation_mode","value":"auto"}}
-"muda limite de warn pra 5" -> {{"rule":"warning_limit","value":5}}
-"muda boas vindas para Seja bem vindo {{name}}" -> {{"rule":"welcome_msg","value":"Seja bem vindo {{name}}"}}
-"libera youtube.com" -> {{"rule":"allowed_links","value":"youtube.com"}}
-"ativa modo noturno" -> {{"rule":"night_mode","value":true}}
-"modo noturno silencioso" -> {{"rule":"night_mode_type","value":"silent"}}
-"modo noturno rigoroso" -> {{"rule":"night_mode_type","value":"strict"}}
-
+REGRAS: welcome, goodbye, anti_link, anti_spam, anti_flood, anti_mention, anti_divulgation, night_mode, night_mode_type (silent/strict), moderation_mode (observer/moderate/strict/auto), warning_limit, flood_limit, flood_window, welcome_msg, goodbye_msg, allowed_links, night_start (22:00), night_end (06:00)
+Exemplos: "ativa o anti link" -> {{"rule":"anti_link","value":true}} | "ativa modo noturno" -> {{"rule":"night_mode","value":true}} | "modo noturno silencioso" -> {{"rule":"night_mode_type","value":"silent"}}
 Retorne SOMENTE JSON. Se não for config: {{"rule":null}}
 """
     raw=call_ai(prompt, timeout=6, max_tokens=180)
@@ -338,16 +304,13 @@ def is_night_time(start_str, end_str):
         e_h, e_m = map(int, end_str.split(":"))
         start = now.replace(hour=s_h, minute=s_m, second=0, microsecond=0)
         end = now.replace(hour=e_h, minute=e_m, second=0, microsecond=0)
-        if start <= end:
-            return start <= now <= end
-        else:
-            return now >= start or now <= end
+        if start <= end: return start <= now <= end
+        else: return now >= start or now <= end
     except: return False
 
 def handle_night_mode(msg, rules):
     if not rules.get("night_mode"): return False
-    if not is_night_time(rules.get("night_start","22:00"), rules.get("night_end","06:00")):
-        return False
+    if not is_night_time(rules.get("night_start","22:00"), rules.get("night_end","06:00")): return False
     chat_id=msg["chat"]["id"]; user_id=msg["from"]["id"]
     if is_protected(chat_id, user_id): return False
     n_type = rules.get("night_mode_type","silent")
@@ -362,15 +325,13 @@ def handle_night_mode(msg, rules):
     elif n_type == "strict":
         text = msg.get("text") or ""
         if check_link(text, rules.get("allowed_links","")) or check_flood(chat_id, user_id, 3, 15):
-            if bot_can(chat_id,"can_delete_messages"):
-                delete_message(chat_id, msg["message_id"])
+            if bot_can(chat_id,"can_delete_messages"): delete_message(chat_id, msg["message_id"])
             return True
     return False
 
 # ========= DECISION ENGINE =========
 def make_decision(event_type, context, rules, ai_result=None):
-    text=context.get("text","")
-    mode=rules.get("moderation_mode","moderate")
+    text=context.get("text",""); mode=rules.get("moderation_mode","moderate")
     try: auto_actions=json.loads(rules.get("auto_actions",'["delete","warn","mute"]'))
     except: auto_actions=["delete","warn","mute"]
     if mode=="observer": return "IGNORE","observer",1.0
@@ -383,9 +344,8 @@ def make_decision(event_type, context, rules, ai_result=None):
     if rules.get("anti_link") and check_link(text, rules.get("allowed_links","")):
         act="DELETE" if "delete" in auto_actions else "WARN"
         return act,"link_nao_permitido",0.92
-    if rules.get("anti_spam"):
-        if check_spam(text, f"{context['chat_id']}_{context['user_id']}"):
-            return "WARN","spam_repetitivo",0.85
+    if rules.get("anti_spam") and check_spam(text, f"{context['chat_id']}_{context['user_id']}"):
+        return "WARN","spam_repetitivo",0.85
     if rules.get("anti_divulgation") and len(text)>20:
         if not ai_result: ai_result=ai_moderator_classify(text, rules)
         if ai_result["category"] in ["divulgacao","spam"] and ai_result["confidence"]>=0.75:
@@ -408,12 +368,13 @@ def handle_new_members(msg):
     if not rules.get("welcome"): return
     for member in msg.get("new_chat_members",[]):
         if member["id"]==BOT_ID:
-            send_message(chat_id,f"🪐 Orbit Alliance V11.3 online! Me promova a *ADM* com apagar e banir. Sou ADM com IA: entendo comandos e português natural. Use /help")
+            send_message(chat_id,f"🪐 Orbit Alliance V12 online! Me promova a *ADM* com apagar e banir. Sou ADM com IA: entendo comandos e português natural. Use /help")
             continue
         name=member.get("first_name","pessoa")
         txt=rules.get("welcome_msg","👋 Seja bem-vindo(a), {name}!").format(name=name, title=msg["chat"].get("title",""))
         send_message(chat_id,txt)
         log_action(chat_id, member["id"], "WELCOME", "entrou", source="SYSTEM")
+
 def handle_left_member(msg):
     chat_id=msg["chat"]["id"]; rules=get_group_config(chat_id)
     if not rules.get("goodbye"): return
@@ -435,14 +396,12 @@ def handle_command(msg):
     cmd=text.split()[0].lower().replace(f"@{BOT_USERNAME or ''}","").replace(f"@{BOT_NAME.lower()}","")
 
     if cmd=="/start":
-        send_message(chat_id,f"🪐 *{BOT_NAME} - ADM Inteligente V11.3*\n\nEu sou diferente dos outros bots ADM.\n\nVocê pode me controlar de *2 jeitos*:\n\n*1️⃣ Por COMANDOS (tradicional):*\n`/antilink on` - ativa anti-link\n`/welcome off` - desativa boas-vindas\n`/mode strict` - modo rigoroso\n`/night silent` - modo noturno silencioso\n`/setwelcome Olá {{name}}!`\n\n*2️⃣ Falando COMIGO em PT-BR (IA):*\nÉ só falar no grupo como se fosse com uma pessoa:\n> \"ativa o anti link\"\n> \"desativa boas vindas\"\n> \"coloca em modo observação\"\n> \"libera divulgação\"\n> \"ativa modo noturno silencioso\"\n> \"muda boas vindas para: Bem vindo {{name}}!\"\n\nEu entendo e configuro sozinho! 🤖✨\n\nMe promova a ADM com permissões de apagar e banir.\nUse /help pra ver todos os comandos.")
+        send_message(chat_id,f"🪐 *{BOT_NAME} - ADM Inteligente V12*\n\n*1️⃣ COMANDOS:* /antilink on /night silent /night 22:00 06:00\n*2️⃣ PT-BR (IA):* \"ativa o anti link\" \"ativa modo noturno das 22:00 as 06:00\"\nMe promova a ADM. Use /help")
         return
 
     if cmd=="/help":
         if is_target_admin(chat_id,user_id) or str(user_id)==CREATOR_ID:
-            send_message(chat_id,"👮 *ORBIT ADM - GUIA COMPLETO V11.3*\n\n*💬 JEITO NOVO: FALE COMIGO (IA TOTAL)*\nVocê NÃO precisa decorar comando. Só digite:\n• \"liga o anti link\" / \"desliga anti link\"\n• \"ativa anti divulgação\" / \"libera divulgação\"\n• \"ativa anti flood\" / \"desativa anti spam\"\n• \"coloca em modo rigoroso / moderado / observação / auto\"\n• \"ativa boas vindas\" / \"desativa despedida\"\n• \"muda mensagem de boas vindas para: Seja bem vindo {name}!\"\n• \"ativa modo noturno\" / \"desativa modo noturno\"\n• \"modo noturno silencioso / rigoroso\"\n• \"coloca modo noturno das 23h as 7h\"\n• \"limite de warn 5\" / \"flood limite 10\"\n• \"libera youtube.com\"\n\n*⌨️ JEITO TRADICIONAL: COMANDOS*\n*Punições:*\n/warn (reply) - advertir\n/unwarn - zerar warns\n/warnings - ver warns\n/mute /unmute /kick /ban /unban\n/delete (reply) - apagar msg\n\n*Proteção:*\n/antilink on/off\n/antispam on/off\n/antiflood on/off\n/antidivulga on/off (IA)\n/antimention on/off\n/night on/off/silent/strict + /night 22:00 06:00\n\n*Sistema:*\n/welcome on/off\n/goodbye on/off\n/setwelcome texto\n/setgoodbye texto\n/mode observer/moderate/strict/auto\n/rules /status /logs /allowlink\n\n*🌙 MODO NOTURNO:*\n/night silent = silencia tudo à noite\n/night strict = só bloqueia link/flood à noite")
-        else:
-            send_message(chat_id,"🤖 *Orbit V11.3*\n\nEntendo 2 jeitos:\n1️⃣ Comandos: /rules /status\n2️⃣ Natural: \"ativa o anti link\" ou \"ativa modo noturno\"\n\nPeça pra um ADM usar /help")
+            send_message(chat_id,"👮 *ORBIT ADM V12*\n\n*💬 FALE COMIGO (IA)*\n• \"liga o anti link\"\n• \"ativa modo noturno das 21:00 as 05:00\"\n• \"modo noturno silencioso / rigoroso\"\n• \"desativa modo noturno\"\n• \"ativa boas vindas\"\n\n*⌨️ COMANDOS*\n/warn /mute /ban /kick /delete\n/antilink /antispam /antiflood /antidivulga\n/night on/off/silent/strict /night 22:00 06:00\n/rules /status /logs")
         return
 
     if msg["chat"]["type"]!="private" and not is_target_admin(chat_id,user_id) and str(user_id)!=CREATOR_ID:
@@ -450,98 +409,89 @@ def handle_command(msg):
 
     if cmd in ["/rules","/config"]:
         r=get_group_config(chat_id)
-        send_message(chat_id,f"⚙️ *{msg['chat'].get('title','Grupo')} V11.3*\n\nWelcome:{'✅' if r.get('welcome') else '❌'} Goodbye:{'✅' if r.get('goodbye') else '❌'}\nAnti-link:{'✅' if r.get('anti_link') else '❌'}\nAnti-spam:{'✅' if r.get('anti_spam') else '❌'}\nFlood:{'✅' if r.get('anti_flood') else '❌'} ({r.get('flood_limit')}/{r.get('flood_window')}s)\nMention:{'✅' if r.get('anti_mention') else '❌'}\nDivulgação IA:{'✅' if r.get('anti_divulgation') else '❌'}\nModo:{r.get('moderation_mode')}\nWarn limite:{r.get('warning_limit')}\n🌙 Noturno:{'✅ '+r.get('night_mode_type') if r.get('night_mode') else '❌'} {r.get('night_start')}-{r.get('night_end')}\nLinks:{r.get('allowed_links')[:50]}"); return
+        send_message(chat_id,f"⚙️ *{msg['chat'].get('title','Grupo')} V12*\nWelcome:{'✅' if r.get('welcome') else '❌'} Anti-link:{'✅' if r.get('anti_link') else '❌'} Divulgação:{'✅' if r.get('anti_divulgation') else '❌'}\n🌙 Noturno:{'✅ '+r.get('night_mode_type') if r.get('night_mode') else '❌'} {r.get('night_start')}-{r.get('night_end')}"); return
 
     if cmd=="/status":
         r=get_group_config(chat_id); bot_adm=is_bot_admin(chat_id)
         perms=f"Del:{'✅' if bot_can(chat_id,'can_delete_messages') else '❌'} Ban:{'✅' if bot_can(chat_id,'can_restrict_members') else '❌'}"
-        send_message(chat_id,f"🤖 *STATUS V11.3 IA TOTAL*\nBot ADM:{'✅' if bot_adm else '❌ ME PROMOVA'}\n{perms}\nIA:{list(PROVIDERS.keys()) or 'nenhuma - só regex'}\nModo:{r.get('moderation_mode')}\n🌙 Noturno:{'✅ '+r.get('night_mode_type') if r.get('night_mode') else '❌'} {r.get('night_start')}-{r.get('night_end')}\nDB: {DATABASE_PATH} + JSONBIN ✅"); return
+        send_message(chat_id,f"🤖 *STATUS V12*\nBot ADM:{'✅' if bot_adm else '❌'}\n{perms}\nIA:{list(PROVIDERS.keys()) or 'regex'}\n🌙 Noturno:{'✅ '+r.get('night_mode_type') if r.get('night_mode') else '❌'} {r.get('night_start')}-{r.get('night_end')}"); return
 
     if cmd.startswith("/night"):
         parts=text.lower().split()
-        if "off" in parts or "desativar" in parts:
-            set_rule(chat_id,"night_mode",False); send_message(chat_id,"🌙 Modo noturno ❌ DESATIVADO"); return
-        if "on" in parts or "ativar" in parts and "silent" not in parts and "strict" not in parts:
-            set_rule(chat_id,"night_mode",True); send_message(chat_id,f"🌙 Modo noturno ✅ ATIVADO ({get_group_config(chat_id).get('night_mode_type')}) das {get_group_config(chat_id).get('night_start')} às {get_group_config(chat_id).get('night_end')}"); return
-        if "silent" in parts or "silencioso" in parts:
-            set_rule(chat_id,"night_mode",True); set_rule(chat_id,"night_mode_type","silent"); send_message(chat_id,"🌙 Modo noturno *SILENCIOSO* ✅ - apaga tudo de não-ADM à noite"); return
-        if "strict" in parts or "rigoroso" in parts:
-            set_rule(chat_id,"night_mode",True); set_rule(chat_id,"night_mode_type","strict"); send_message(chat_id,"🌙 Modo noturno *RIGOROSO* ✅ - bloqueia link/flood à noite"); return
         times=re.findall(r"\d{1,2}:\d{2}", text)
         if len(times)>=2:
             set_rule(chat_id,"night_start",times[0]); set_rule(chat_id,"night_end",times[1]); set_rule(chat_id,"night_mode",True)
             send_message(chat_id,f"🌙 Horário noturno: {times[0]} às {times[1]} ✅"); return
+        if "off" in parts or "desativar" in parts or "desliga" in parts:
+            set_rule(chat_id,"night_mode",False); send_message(chat_id,"🌙 Modo noturno ❌ DESATIVADO"); return
+        if "silent" in parts or "silencioso" in parts:
+            set_rule(chat_id,"night_mode",True); set_rule(chat_id,"night_mode_type","silent"); send_message(chat_id,"🌙 Modo noturno *SILENCIOSO* ✅"); return
+        if "strict" in parts or "rigoroso" in parts:
+            set_rule(chat_id,"night_mode",True); set_rule(chat_id,"night_mode_type","strict"); send_message(chat_id,"🌙 Modo noturno *RIGOROSO* ✅"); return
+        if "on" in parts or "ativar" in parts or "liga" in parts:
+            set_rule(chat_id,"night_mode",True); send_message(chat_id,f"🌙 Modo noturno ✅ {get_group_config(chat_id).get('night_start')} às {get_group_config(chat_id).get('night_end')}"); return
         r=get_group_config(chat_id)
-        send_message(chat_id,f"🌙 *Modo Noturno:* {'✅ ON' if r.get('night_mode') else '❌ OFF'}\nTipo: {r.get('night_mode_type')}\nHorário: {r.get('night_start')} às {r.get('night_end')}\n\nUse:\n/night on/off\n/night silent\n/night strict\n/night 22:00 06:00"); return
+        send_message(chat_id,f"🌙 *Noturno:* {'✅ ON' if r.get('night_mode') else '❌ OFF'} {r.get('night_mode_type')} {r.get('night_start')}-{r.get('night_end')}\nUse /night on/off/silent/strict /night 22:00 06:00"); return
 
     if cmd.startswith("/warn"):
         tid=parse_target(msg)
-        if not tid: send_message(chat_id,"Responda a mensagem com /warn + motivo"); return
-        if is_protected(chat_id,tid): send_message(chat_id,"⚠️ Não posso punir ADM/bot/criador"); return
+        if not tid: send_message(chat_id,"Responda com /warn"); return
+        if is_protected(chat_id,tid): send_message(chat_id,"⚠️ Protegido"); return
         reason=" ".join(text.split()[1:]) or "sem motivo"; c=add_warning(chat_id,tid,reason); lim=get_group_config(chat_id).get("warning_limit",3)
-        send_message(chat_id,f"⚠️ Advertência {c}/{lim}\nMotivo: {reason}"); log_action(chat_id,tid,"WARN",reason,msg["message_id"],"ADMIN")
-        if c>=lim:
-            if bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,tid,600); send_message(chat_id,f"🔇 Mute automático - limite {c}/{lim}"); log_action(chat_id,tid,"MUTE",f"limite_warn {c}/{lim}",source="AUTO")
+        send_message(chat_id,f"⚠️ {c}/{lim} - {reason}")
+        if c>=lim and bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,tid,600)
         return
-    if cmd.startswith("/unwarn") or cmd.startswith("/clearwarn"): tid=parse_target(msg); clear_warnings(chat_id,tid); send_message(chat_id,"✅ Warnings zerados"); return
-    if cmd=="/warnings": tid=parse_target(msg); w=get_warnings(chat_id,tid); send_message(chat_id,f"Warnings: {w.get('count',0)} motivo: {w.get('last_reason','-')}"); return
+    if cmd.startswith("/unwarn"): tid=parse_target(msg); clear_warnings(chat_id,tid); send_message(chat_id,"✅ Warnings zerados"); return
     if cmd.startswith("/mute"):
         tid=parse_target(msg)
-        if not tid or is_protected(chat_id,tid): send_message(chat_id,"⚠️ Protegido"); return
-        if not bot_can(chat_id,"can_restrict_members"): send_message(chat_id,"❌ Preciso ser ADM com permissão de restringir"); return
-        restrict_user(chat_id,tid,3600); send_message(chat_id,"🔇 Silenciado 1h"); log_action(chat_id,tid,"MUTE","cmd_admin",msg["message_id"],"ADMIN"); return
-    if cmd.startswith("/unmute"): tid=parse_target(msg); unrestrict_user(chat_id,tid); send_message(chat_id,"🔊 Unmute ok"); log_action(chat_id,tid,"UNMUTE","cmd",source="ADMIN"); return
+        if not tid or is_protected(chat_id,tid): return
+        if not bot_can(chat_id,"can_restrict_members"): return
+        restrict_user(chat_id,tid,3600); send_message(chat_id,"🔇 Silenciado 1h"); return
+    if cmd.startswith("/unmute"): tid=parse_target(msg); unrestrict_user(chat_id,tid); send_message(chat_id,"🔊 Unmute"); return
     if cmd.startswith("/ban"):
         tid=parse_target(msg)
-        if not tid or is_protected(chat_id,tid): send_message(chat_id,"⚠️ Protegido"); return
-        if not bot_can(chat_id,"can_restrict_members"): send_message(chat_id,"❌ Sem permissão ban"); return
-        ban_user(chat_id,tid); send_message(chat_id,"🚫 Banido"); log_action(chat_id,tid,"BAN","cmd_admin",source="ADMIN"); return
-    if cmd.startswith("/unban"):
-        tid=parse_target(msg)
-        if not tid and len(text.split())>=2 and text.split()[1].isdigit(): tid=int(text.split()[1])
-        if not tid: send_message(chat_id,"Use /unban ID ou reply"); return
-        unban_user(chat_id,tid); send_message(chat_id,"✅ Desbanido"); log_action(chat_id,tid,"UNBAN","cmd",source="ADMIN"); return
+        if not tid or is_protected(chat_id,tid): return
+        ban_user(chat_id,tid); send_message(chat_id,"🚫 Banido"); return
+    if cmd.startswith("/unban"): tid=parse_target(msg); unban_user(chat_id,tid); send_message(chat_id,"✅ Desbanido"); return
     if cmd.startswith("/kick"):
         tid=parse_target(msg)
         if not tid or is_protected(chat_id,tid): return
-        if not bot_can(chat_id,"can_restrict_members"): send_message(chat_id,"❌ Sem permissão"); return
-        kick_user(chat_id,tid); send_message(chat_id,"👢 Kick - removido"); log_action(chat_id,tid,"KICK","cmd",source="ADMIN"); return
+        kick_user(chat_id,tid); send_message(chat_id,"👢 Kick"); return
     if cmd.startswith("/delete") or cmd.startswith("/del"):
-        if "reply_to_message" in msg: delete_message(chat_id,msg["reply_to_message"]["message_id"]); delete_message(chat_id,msg["message_id"]); log_action(chat_id,user_id,"DELETE","cmd",source="ADMIN")
-        else: send_message(chat_id,"Responda uma mensagem com /delete"); return
-    if cmd.startswith("/antilink"): val="on" in text.lower() or "ativar" in text.lower() or "1" in text.split(); set_rule(chat_id,"anti_link",val); send_message(chat_id,f"Anti-link {'✅ ON' if val else '❌ OFF'}"); return
+        if "reply_to_message" in msg: delete_message(chat_id,msg["reply_to_message"]["message_id"]); delete_message(chat_id,msg["message_id"])
+        return
+    if cmd.startswith("/antilink"): val="on" in text.lower() or "ativar" in text.lower(); set_rule(chat_id,"anti_link",val); send_message(chat_id,f"Anti-link {'✅ ON' if val else '❌ OFF'}"); return
     if cmd.startswith("/antispam"): val="on" in text.lower(); set_rule(chat_id,"anti_spam",val); send_message(chat_id,f"Anti-spam {'✅' if val else '❌'}"); return
     if cmd.startswith("/antiflood"): val="on" in text.lower(); set_rule(chat_id,"anti_flood",val); send_message(chat_id,f"Anti-flood {'✅' if val else '❌'}"); return
     if cmd.startswith("/antimention"): val="on" in text.lower(); set_rule(chat_id,"anti_mention",val); send_message(chat_id,f"Anti-mention {'✅' if val else '❌'}"); return
-    if cmd.startswith("/antidivulga"): val="on" in text.lower(); set_rule(chat_id,"anti_divulgation",val); send_message(chat_id,f"Anti-divulgação IA {'✅' if val else '❌'}"); return
-    if cmd.startswith("/welcome"):
-        if "on" in text.lower() or "off" in text.lower(): val="on" in text.lower(); set_rule(chat_id,"welcome",val); send_message(chat_id,f"Welcome {'✅' if val else '❌'}")
-        return
+    if cmd.startswith("/antidivulga"): val="on" in text.lower(); set_rule(chat_id,"anti_divulgation",val); send_message(chat_id,f"Anti-divulgação {'✅' if val else '❌'}"); return
+    if cmd.startswith("/welcome"): val="on" in text.lower(); set_rule(chat_id,"welcome",val); send_message(chat_id,f"Welcome {'✅' if val else '❌'}"); return
     if cmd.startswith("/goodbye"): val="on" in text.lower(); set_rule(chat_id,"goodbye",val); send_message(chat_id,f"Goodbye {'✅' if val else '❌'}"); return
     if cmd.startswith("/setwelcome"):
         new_msg=text.replace("/setwelcome","").strip()
-        if not new_msg: send_message(chat_id,"Use: /setwelcome Bem vindo {name} ao {title}!"); return
-        set_rule(chat_id,"welcome_msg",new_msg); send_message(chat_id,f"✅ Welcome definido:\n{new_msg}"); return
+        set_rule(chat_id,"welcome_msg",new_msg); send_message(chat_id,f"✅ Welcome definido"); return
     if cmd.startswith("/setgoodbye"):
         new_msg=text.replace("/setgoodbye","").strip()
-        if not new_msg: send_message(chat_id,"Use: /setgoodbye Tchau {name}!"); return
-        set_rule(chat_id,"goodbye_msg",new_msg); send_message(chat_id,f"✅ Goodbye definido:\n{new_msg}"); return
+        set_rule(chat_id,"goodbye_msg",new_msg); send_message(chat_id,f"✅ Goodbye definido"); return
     if cmd.startswith("/mode"):
-        parts=text.split(); m=parts[-1].lower() if len(parts)>1 else ""
-        mapa={"moderado":"moderate","rigido":"strict","observer":"observer","moderate":"moderate","strict":"strict","auto":"auto","auto-ia":"auto"}
-        if m in mapa: set_rule(chat_id,"moderation_mode",mapa[m]); send_message(chat_id,f"✅ Modo alterado para {mapa[m]}")
-        else: send_message(chat_id,"Use: /mode observer / moderate / strict / auto"); return
-    if cmd.startswith("/logs"):
-        conn=get_db(); rows=conn.execute("SELECT user_id,action,reason,source,created_at FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT 15",(str(chat_id),)).fetchall(); conn.close()
-        if not rows: send_message(chat_id,"Sem logs ainda"); return
-        txt="\n".join([f"{r['created_at'][11:16]} {r['action']} uid:{str(r['user_id'])[-4:]} {r['reason'][:20]} [{r['source']}]" for r in rows]); send_message(chat_id,f"📋 *Últimos 15 logs:*\n{txt}"); return
+        m=text.split()[-1].lower(); mapa={"moderado":"moderate","rigido":"strict","observer":"observer","moderate":"moderate","strict":"strict","auto":"auto"}
+        if m in mapa: set_rule(chat_id,"moderation_mode",mapa[m]); send_message(chat_id,f"✅ Modo {mapa[m]}")
+        return
     if cmd.startswith("/allowlink"):
         link=text.replace("/allowlink","").strip().lower()
-        if not link: send_message(chat_id,f"Permitidos: {get_group_config(chat_id).get('allowed_links')}"); return
         cur=get_group_config(chat_id).get("allowed_links",""); new=cur+","+link if cur else link; set_rule(chat_id,"allowed_links",new); send_message(chat_id,f"✅ Link permitido: {link}"); return
 
-    # IA NATURAL TOTAL
+    # ========= IA NATURAL TOTAL + REGEX HORÁRIO =========
     if len(text)>5:
+        times=re.findall(r"\d{1,2}:\d{2}", text)
+        if len(times)>=2 and "noturno" in text.lower():
+            set_rule(chat_id,"night_start",times[0])
+            set_rule(chat_id,"night_end",times[1])
+            set_rule(chat_id,"night_mode",True)
+            if "silenc" in text.lower(): set_rule(chat_id,"night_mode_type","silent")
+            if "rigor" in text.lower(): set_rule(chat_id,"night_mode_type","strict")
+            send_message(chat_id,f"🌙 *IA entendeu:* modo noturno {times[0]} às {times[1]} ✅\nVocê disse: \"{text}\"")
+            return
         cfg=ai_natural_config(text)
         if cfg and cfg.get("rule"):
             rule=cfg["rule"]; val=cfg["value"]
@@ -553,11 +503,11 @@ def handle_command(msg):
             if rule in ["welcome_msg","goodbye_msg","night_start","night_end"]:
                 set_rule(chat_id,rule,val); send_message(chat_id,f"🤖 *IA entendeu:* {rule} = {val}\nVocê disse: \"{text}\""); return
             if rule in ["warning_limit","flood_limit","flood_window"]:
-                try: set_rule(chat_id,rule,int(val)); send_message(chat_id,f"🤖 *IA entendeu:* {rule} = {val}\nVocê disse: \"{text}\""); return
+                try: set_rule(chat_id,rule,int(val)); send_message(chat_id,f"🤖 *IA entendeu:* {rule} = {val}"); return
                 except: pass
             if rule=="allowed_links":
                 cur=get_group_config(chat_id).get("allowed_links",""); new=cur+","+str(val) if cur else str(val)
-                set_rule(chat_id,"allowed_links",new); send_message(chat_id,f"🤖 *IA entendeu:* Liberei link *{val}*\nVocê disse: \"{text}\""); return
+                set_rule(chat_id,"allowed_links",new); send_message(chat_id,f"🤖 *IA entendeu:* Liberei link *{val}*"); return
 
 # ========= MESSAGE HANDLER =========
 def handle_message(msg):
@@ -565,69 +515,40 @@ def handle_message(msg):
     chat_id=msg["chat"]["id"]; user_id=msg["from"]["id"]; text=msg.get("text") or msg.get("caption") or ""
     if text.startswith("/"): handle_command(msg); return
     if is_protected(chat_id,user_id):
-        # permite ADM usar IA natural sem /
-        if len(text)>5 and text.lower().startswith(("ativa","desativa","liga","desliga","coloca","muda","libera","modo")):
+        if len(text)>5 and ("ativa" in text.lower() or "desativa" in text.lower() or "liga" in text.lower() or "noturno" in text.lower() or "anti" in text.lower() or "modo" in text.lower() or "muda" in text.lower() or "libera" in text.lower()):
             handle_command(msg)
         return
     rules=get_group_config(chat_id)
     if not rules: return
-
-    # MODO NOTURNO - checa primeiro
     if handle_night_mode(msg, rules):
         log_action(chat_id,user_id,"NIGHT_MODE",f"bloqueio {rules.get('night_mode_type')}",msg["message_id"],"AUTO")
         return
-
-    # IA NATURAL sem precisar de / (só pra ADM)
-    if len(text)>5 and (text.lower().startswith(("ativa","desativa","liga","desliga","coloca","muda","libera","modo","anti")) or "modo noturno" in text.lower()):
-        if is_target_admin(chat_id,user_id) or str(user_id)==CREATOR_ID:
-            handle_command(msg)
-            # se a IA entendeu, já retorna e não modera como spam
-            cfg=ai_natural_config(text)
-            if cfg and cfg.get("rule"):
-                return
-
     ctx={"chat_id":chat_id,"user_id":user_id,"text":text,"message_id":msg["message_id"]}
     action, reason, conf = make_decision("MESSAGE", ctx, rules)
-
     if conf<0.8 and action in ["BAN","KICK"]: action="WARN"
     if rules.get("moderation_mode")=="observer":
         if action!="IGNORE": log_action(chat_id,user_id,f"SIM_{action}",reason,msg["message_id"],"SIMULATION")
         return
     try: auto_actions=json.loads(rules.get("auto_actions",'["delete","warn","mute"]'))
     except: auto_actions=["delete","warn","mute"]
-
     if action=="IGNORE": return
     if action=="DELETE":
-        if not bot_can(chat_id,"can_delete_messages"): log_action(chat_id,user_id,"FAIL_DEL","sem_perm",msg["message_id"],"SYSTEM"); return
-        delete_message(chat_id,msg["message_id"]); log_action(chat_id,user_id,"DELETE",reason,msg["message_id"],"AUTO")
+        if not bot_can(chat_id,"can_delete_messages"): return
+        delete_message(chat_id,msg["message_id"])
     elif action=="WARN":
-        if "warn" not in auto_actions and "delete" in auto_actions:
-            if bot_can(chat_id,"can_delete_messages"): delete_message(chat_id,msg["message_id"])
-            return
         c=add_warning(chat_id,user_id,reason); lim=rules.get("warning_limit",3)
         if bot_can(chat_id,"can_delete_messages"): delete_message(chat_id,msg["message_id"])
-        send_message(chat_id,f"⚠️ Advertência {c}/{lim} - {reason}"); log_action(chat_id,user_id,"WARN",reason,msg["message_id"],"AUTO")
-        if c>=lim and bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,user_id,600); send_message(chat_id,f"🔇 Mute automático {c}/{lim}"); log_action(chat_id,user_id,"MUTE",f"limite_warn",source="AUTO")
+        send_message(chat_id,f"⚠️ Advertência {c}/{lim} - {reason}")
+        if c>=lim and bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,user_id,600)
     elif action=="MUTE":
         if not bot_can(chat_id,"can_restrict_members"): return
         if bot_can(chat_id,"can_delete_messages"): delete_message(chat_id,msg["message_id"])
-        restrict_user(chat_id,user_id,600); send_message(chat_id,f"🔇 Silenciado 10min - {reason}"); log_action(chat_id,user_id,"MUTE",reason,msg["message_id"],"AUTO")
-    elif action=="KICK":
-        if "kick" not in auto_actions:
-            if bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,user_id,600); send_message(chat_id,f"🔇 Mute (kick bloqueado) - {reason}")
-            return
-        if not bot_can(chat_id,"can_restrict_members"): return
-        kick_user(chat_id,user_id); send_message(chat_id,f"👢 Removido - {reason}"); log_action(chat_id,user_id,"KICK",reason,msg["message_id"],"AUTO")
+        restrict_user(chat_id,user_id,600); send_message(chat_id,f"🔇 Silenciado 10min - {reason}")
     elif action=="BAN":
-        if "ban" not in auto_actions:
-            if bot_can(chat_id,"can_restrict_members"): restrict_user(chat_id,user_id,3600); send_message(chat_id,f"🔇 Mute (ban bloqueado) - {reason}")
-            return
         if not bot_can(chat_id,"can_restrict_members"): return
-        if conf<0.92:
-            restrict_user(chat_id,user_id,3600); send_message(chat_id,f"🔇 Mute (confiança baixa pra ban {conf:.2f}) - {reason}"); return
-        ban_user(chat_id,user_id); send_message(chat_id,f"🚫 Banido - {reason}"); log_action(chat_id,user_id,"BAN",reason,msg["message_id"],"AUTO")
+        if conf<0.92: restrict_user(chat_id,user_id,3600); return
+        ban_user(chat_id,user_id); send_message(chat_id,f"🚫 Banido - {reason}")
 
-# ========= PROCESS UPDATE =========
 def process_update(update):
     try:
         if "message" in update:
@@ -639,12 +560,10 @@ def process_update(update):
         elif "my_chat_member" in update:
             chat=update["my_chat_member"]["chat"]; conn=get_db(); now=datetime.now(timezone.utc).isoformat()
             conn.execute("INSERT OR IGNORE INTO groups(chat_id,title,type,created_at,updated_at) VALUES(?,?,?,?,?)",(str(chat["id"]),chat.get("title",""),chat.get("type",""),now,now)); conn.commit(); conn.close(); get_group_config(chat["id"])
-            executor.submit(backup_db_to_jsonbin)
     except Exception as e: logging.exception(f"update {e}")
 
-# ========= FLASK =========
 @app.route('/')
-def index(): return f"{BOT_NAME} ADM V11.3 IA TOTAL + NIGHT DUAL ONLINE | DB:{DATABASE_PATH} + JSONBIN | IA:{list(PROVIDERS.keys()) or 'regex'}",200
+def index(): return f"{BOT_NAME} ADM V12 FINAL ONLINE | IA:{list(PROVIDERS.keys()) or 'regex'}",200
 @app.route('/health')
 def health(): return "ok",200
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
