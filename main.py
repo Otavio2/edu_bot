@@ -6,11 +6,10 @@ from flask import Flask, request, abort
 from concurrent.futures import ThreadPoolExecutor
 import pytz
 
-# ========== ENV ONLY ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN: raise RuntimeError("TELEGRAM_TOKEN env missing")
 CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET") # crie um aleatorio 32 chars
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 JSONBIN_ID = os.getenv("JSONBIN_ID")
 JSONBIN_KEY = os.getenv("JSONBIN_KEY")
 DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
@@ -40,7 +39,6 @@ VALID_AUTO = {"DELETE","WARN","MUTE","KICK","BAN"}
 VALID_MODES = {"observer","moderate","strict","auto"}
 VALID_NIGHT = {"silent","strict"}
 
-# ========== DB ==========
 def get_db():
     c = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
     c.row_factory = sqlite3.Row
@@ -68,7 +66,6 @@ def log_error(comp, err, chat_id=None, upd=None):
         c=get_db(); c.execute("INSERT INTO system_errors(component,error,chat_id,update_id,created_at) VALUES(?,?,?,?,?)",(comp,safe,str(chat_id) if chat_id else None,upd,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
     except: pass
 
-# ========== VALIDATORS ==========
 def parse_bool(v):
     if isinstance(v,bool): return v
     s=str(v).lower().strip()
@@ -102,7 +99,6 @@ def is_link_allowed(txt, allowed_str):
         return False,dom
     return True,None
 
-# ========== TELEGRAM ==========
 def telegram_req(method,payload=None,retries=2):
     url=f"{TELEGRAM_API_URL}/{method}"
     for attempt in range(retries+1):
@@ -129,7 +125,6 @@ def send(chat_id, txt, reply=None):
     if reply: p["reply_to_message_id"]=reply
     return telegram_req("sendMessage",p)
 
-# ========== CONFIG ==========
 def get_cfg(chat_id):
     c=get_db(); r=c.execute("SELECT * FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
     if not r:
@@ -140,7 +135,6 @@ def get_cfg(chat_id):
 def set_cfg(chat_id, key, val):
     if key not in {"welcome","goodbye","anti_link","anti_spam","anti_flood","anti_mention","anti_divulgation","warning_limit","moderation_mode","flood_limit","flood_window","welcome_msg","goodbye_msg","allowed_links","auto_actions","night_mode","night_mode_type","night_start","night_end","mute_duration"}:
         return False
-    # valida
     if key in ("welcome","goodbye","anti_link","anti_spam","anti_flood","anti_mention","anti_divulgation","night_mode"):
         b=parse_bool(val)
         if b is None: return False
@@ -175,7 +169,6 @@ def set_cfg(chat_id, key, val):
     global backup_pending; backup_pending=True
     return True
 
-# ========== AUTH ==========
 def is_admin(chat_id,uid):
     m=telegram_req("getChatMember",{"chat_id":chat_id,"user_id":uid})
     return m.get("ok") and m.get("result",{}).get("status") in ("administrator","creator")
@@ -237,12 +230,10 @@ def execute_action(chat_id,action,target_id=None,reason="",message_id=None,admin
     log_action(chat_id,target_id,action,reason[:200],message_id,source,success,admin_id)
     return {"success":success,"error":None if success else str(res)[:200],"action":action}
 
-# ========== BACKUP/RESTORE SEGURO ==========
 def restore_safe():
     if not JSONBIN_URL:
         logging.warning("RESTORE skip - sem JSONBIN_URL")
         return
-    # Se já tem banco válido local, não baixa (Render novo = arquivo não existe)
     if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH) > 1024:
         try:
             c=sqlite3.connect(DATABASE_PATH)
@@ -259,12 +250,10 @@ def restore_safe():
             logging.warning(f"RESTORE http {r.status_code}")
             return
         rec=r.json().get("record",{})
-        # sua bin usa b64, antiga usa db_base64 - aceita os dois
         b64=rec.get("db_base64") or rec.get("b64")
         if not b64:
             logging.warning("RESTORE vazio - sem b64")
             return
-        # valida checksum se tiver
         if rec.get("checksum"):
             calc=hashlib.sha256(b64.encode()).hexdigest()[:16]
             if calc!=rec.get("checksum"):
@@ -273,7 +262,6 @@ def restore_safe():
         tmp=DATABASE_PATH+".restore"
         with open(tmp,"wb") as f:
             f.write(base64.b64decode(b64))
-        # valida o arquivo baixado antes de trocar
         c=sqlite3.connect(tmp)
         chk=c.execute("PRAGMA quick_check").fetchone()
         c.close()
@@ -323,7 +311,6 @@ def cleanup_worker():
 threading.Thread(target=backup_worker,daemon=True).start()
 threading.Thread(target=cleanup_worker,daemon=True).start()
 
-# ========== WEBHOOK ==========
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     if WEBHOOK_SECRET:
@@ -361,9 +348,7 @@ def resolve_target(msg, args):
     return None
 
 def process_update(update):
-    # EVENT ANALYZER
     if "my_chat_member" in update:
-        # bot status mudou -> invalida cache, atualiza groups
         chat=update["my_chat_member"]["chat"]; cid=str(chat["id"])
         c=get_db(); c.execute("INSERT OR REPLACE INTO groups(chat_id,title,type,updated_at) VALUES(?,?,?,?)",(cid,chat.get("title",""),chat.get("type",""),datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
         return
@@ -376,14 +361,11 @@ def process_update(update):
     mid = msg["message_id"]
     cfg = get_cfg(chat_id)
 
-    # grupo desabilitado
     c=get_db(); g=c.execute("SELECT enabled FROM groups WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
     if g and g["enabled"]==0 and not text.startswith("/"): return
 
-    # atualiza grupo
     c=get_db(); c.execute("INSERT OR REPLACE INTO groups(chat_id,title,type,updated_at) VALUES(?,?,?,?)",(str(chat_id),msg["chat"].get("title",""),chat_type,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
 
-    # NIGHT MODE SILENT/STRICT
     if cfg.get("night_mode"):
         ns,ne=cfg.get("night_start","22:00"),cfg.get("night_end","06:00")
         if valid_hhmm(ns) and valid_hhmm(ne):
@@ -394,303 +376,130 @@ def process_update(update):
                     execute_action(chat_id,"DELETE",uid,"night_silent",mid,source="AUTO")
                     return
                 elif cfg.get("night_mode_type")=="strict":
-                    # strict = regras mais rigorosas mas sem lock
                     if len(text)>500:
                         execute_action(chat_id,"DELETE",uid,"night_strict_long",mid,source="AUTO")
                         return
 
-    # ========== COMMANDS ==========
     if text.startswith("/"):
         parts=text.strip().split()
         cmd=parts[0].split("@")[0].lower()
         args=parts[1:] if len(parts)>1 else []
 
-        # comandos restritos a grupo
         if chat_type=="private" and cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin"):
             send(chat_id,"⚠️ Esse comando só funciona em grupos.")
             return
-
-        if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink","/slowmode","/lock","/unlock"):
+        if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink"):
             if not is_admin(chat_id,uid):
                 send(chat_id,"⚠️ Só administradores podem usar.")
                 return
-
         if cmd=="/ban":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda a mensagem com /ban ou use /ban <id>", mid)
-                return
-            # confirmação de alto impacto: pede motivo se não tiver
-            reason=" ".join(args[1:]) if args and not args[0].isdigit() else " ".join(args) if args else f"ban por {uid}"
-            r=execute_action(chat_id,"BAN",target,reason,None,admin_id=uid,source="COMMAND",confidence=1.0)
-            if r["success"]:
-                send(chat_id,f"🚫 Usuário {target} banido. Motivo: {reason[:100]}", mid)
-            else:
-                send(chat_id,f"❌ Falha ban: {r['error']}", mid)
-            return
-
+            if not target: send(chat_id,"⚠️ Responda com /ban", mid); return
+            r=execute_action(chat_id,"BAN",target,f"ban por {uid}",None,admin_id=uid,source="COMMAND",confidence=1.0)
+            send(chat_id,f"🚫 Banido {target}" if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/unban":
             target=resolve_target(msg,args) or (args[0] if args else None)
-            if not target or not target.isdigit():
-                send(chat_id,"⚠️ Use /unban <id> ou responda a mensagem", mid)
-                return
+            if not target or not target.isdigit(): send(chat_id,"⚠️ /unban <id>", mid); return
             r=execute_action(chat_id,"UNBAN",target,"unban",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"✅ Desbanido." if r["success"] else f"❌ Falha: {r['error']}", mid)
-            return
-
+            send(chat_id,"✅ Desbanido." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/kick":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda com /kick", mid)
-                return
+            if not target: send(chat_id,"⚠️ Responda com /kick", mid); return
             r=execute_action(chat_id,"KICK",target,f"kick por {uid}",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"👢 Expulso." if r["success"] else f"❌ Falha kick: {r['error']}", mid)
-            return
-
+            send(chat_id,"👢 Expulso." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/mute":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda com /mute", mid)
-                return
+            if not target: send(chat_id,"⚠️ Responda com /mute", mid); return
             r=execute_action(chat_id,"MUTE",target,f"mute por {uid}",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"🔇 Mutado." if r["success"] else f"❌ Falha mute: {r['error']}", mid)
-            return
-
+            send(chat_id,"🔇 Mutado." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/unmute":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda com /unmute", mid)
-                return
+            if not target: send(chat_id,"⚠️ Responda com /unmute", mid); return
             r=execute_action(chat_id,"UNMUTE",target,"unmute",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"🔊 Desmutado." if r["success"] else f"❌ Falha: {r['error']}", mid)
-            return
-
+            send(chat_id,"🔊 Desmutado." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/delete":
-            if not msg.get("reply_to_message"):
-                send(chat_id,"⚠️ Responda a mensagem que quer apagar com /delete", mid)
-                return
-            r=execute_action(chat_id,"DELETE",None,"delete cmd",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
-            if not r["success"]:
-                send(chat_id,f"❌ Falha delete: {r['error']}")
+            if not msg.get("reply_to_message"): send(chat_id,"⚠️ Responda com /delete", mid); return
+            r=execute_action(chat_id,"DELETE",None,"delete",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
+            if not r["success"]: send(chat_id,f"❌ {r['error']}")
             return
-
         if cmd=="/warn":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda com /warn", mid)
-                return
-            if is_protected(chat_id,target):
-                send(chat_id,"⚠️ Não posso advertir admin/protegido.")
-                return
-            # WARNING ATÔMICO
+            if not target: send(chat_id,"⚠️ Responda com /warn", mid); return
+            if is_protected(chat_id,target): send(chat_id,"⚠️ Protegido"); return
             with db_lock:
-                c=get_db()
-                row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone()
+                c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone()
                 cnt=(row["count"]+1) if row else 1
-                c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(target),cnt,f"warn por {uid} - {' '.join(args)}"[:180],datetime.now(timezone.utc).isoformat()))
-                c.commit(); c.close()
+                c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(target),cnt,f"warn por {uid}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
             log_action(chat_id,target,"WARN",f"warn por {uid}",mid,"COMMAND",True,uid)
-            cfg2=get_cfg(chat_id)
-            limit=cfg2.get("warning_limit",3)
-            if cnt>=limit:
-                # só muta se MUTE estiver em auto_actions
-                try: allowed=json.loads(cfg2.get("auto_actions",'[]'))
-                except: allowed=[]
-                if "MUTE" in [a.upper() for a in allowed]:
-                    execute_action(chat_id,"MUTE",target,f"limite warns {cnt}/{limit}",None,admin_id=uid,source="AUTO",confidence=1.0)
-                    send(chat_id,f"⚠️ {target} atingiu {cnt}/{limit} warns e foi mutado.")
-                else:
-                    send(chat_id,f"⚠️ Advertência {cnt}/{limit} para {target} (sem ação auto)")
-            else:
-                send(chat_id,f"⚠️ Advertência {cnt}/{limit} para {target}")
-            return
-
+            send(chat_id,f"⚠️ {target} {cnt}/{get_cfg(chat_id).get('warning_limit',3)} warns"); return
         if cmd=="/unwarn":
             target=resolve_target(msg,args)
-            if not target:
-                send(chat_id,"⚠️ Responda à mensagem do usuário com /unwarn.", mid)
-                return
-            with db_lock:
-                c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))); c.commit(); c.close()
-            log_action(chat_id,target,"UNWARN","reset",mid,"COMMAND",True,uid)
-            send(chat_id,f"✅ Warnings de {target} resetados.", mid)
-            return
-
+            if not target: send(chat_id,"⚠️ /unwarn", mid); return
+            with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))); c.commit(); c.close()
+            send(chat_id,f"✅ Warnings de {target} resetados.", mid); return
         if cmd=="/warnings":
             target=resolve_target(msg,args) or str(uid)
-            c=get_db(); row=c.execute("SELECT count,last_reason FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone(); c.close()
-            if not row:
-                send(chat_id,f"✅ {target} sem advertências.", mid)
-                return
-            send(chat_id,f"⚠️ {target}: {row['count']} warns, último: {row['last_reason']}", mid)
-            return
-
+            c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone(); c.close()
+            send(chat_id,f"✅ {target} sem warns" if not row else f"⚠️ {target}: {row['count']} warns", mid); return
         if cmd=="/resetwarnings":
-            with db_lock:
-                c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close()
-            log_action(chat_id,None,"RESETWARNINGS","reset all",mid,"COMMAND",True,uid)
-            send(chat_id,"✅ Todos warnings do grupo resetados.", mid)
-            return
-
+            with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close()
+            send(chat_id,"✅ Warnings resetados", mid); return
         if cmd=="/allowlink":
-            if not args:
-                send(chat_id,"Use: /allowlink dominio.com", mid)
-                return
+            if not args: send(chat_id,"Use: /allowlink dominio.com", mid); return
             dom=args[0].lower().strip()
-            if not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$",dom):
-                send(chat_id,"⚠️ Domínio inválido. Ex: youtube.com", mid)
-                return
-            cfg2=get_cfg(chat_id)
-            cur=cfg2.get("allowed_links","")
-            lista=[a.strip() for a in cur.split(",") if a.strip()]
-            if dom not in lista:
-                lista.append(dom)
-                set_cfg(chat_id,"allowed_links",",".join(lista))
-            send(chat_id,f"✅ {dom} agora é permitido.", mid)
-            return
-
+            cfg2=get_cfg(chat_id); cur=cfg2.get("allowed_links",""); lista=[a.strip() for a in cur.split(",") if a.strip()]
+            if dom not in lista: lista.append(dom); set_cfg(chat_id,"allowed_links",",".join(lista))
+            send(chat_id,f"✅ {dom} permitido.", mid); return
         if cmd=="/pin":
-            if not msg.get("reply_to_message"):
-                send(chat_id,"Responda a mensagem com /pin", mid)
-                return
+            if not msg.get("reply_to_message"): send(chat_id,"Responda com /pin", mid); return
             r=execute_action(chat_id,"PIN",None,"pin",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
-            send(chat_id,"📌 Fixado." if r["success"] else f"❌ Falha pin: {r['error']}", mid)
-            return
-
+            send(chat_id,"📌 Fixado." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/unpin":
-            target_mid=msg.get("reply_to_message",{}).get("message_id") if msg.get("reply_to_message") else None
-            # se não responder, desfixa tudo
-            r=execute_action(chat_id,"UNPIN",None,"unpin",target_mid,admin_id=uid,source="COMMAND")
-            send(chat_id,"📌 Desfixado." if r["success"] else f"❌ Falha unpin: {r['error']}", mid)
-            return
-
+            r=execute_action(chat_id,"UNPIN",None,"unpin",None,admin_id=uid,source="COMMAND")
+            send(chat_id,"📌 Desfixado." if r["success"] else f"❌ {r['error']}", mid); return
         if cmd=="/logs":
-            lim=20
-            if args and args[0].isdigit():
-                ok,iv=valid_int(args[0],1,100)
-                lim=iv if ok else 20
-            c=get_db()
-            rows=c.execute("SELECT action,user_id,admin_id,reason,source,success,created_at FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT?",(str(chat_id),lim)).fetchall()
-            c.close()
-            if not rows:
-                send(chat_id,"Sem logs.", mid)
-                return
-            out=f"📋 *Logs últimos {lim}:*\n"
-            for r in rows:
-                out+=f"{r['created_at'][11:16]} {r['action']} alvo:{r['user_id'] or '-'} src:{r['source']} ok:{r['success']} {r['reason'][:35]}\n"
-            send(chat_id,out[:3900], mid)
-            return
-
-                if cmd=="/status":
-            # STATUS REAL - V13 FIX
-            try:
-                tg=telegram_req("getMe")
-                tgs="🟢 ONLINE" if tg.get("ok") else f"🔴 {tg.get('description','OFFLINE')}"
-            except Exception as e:
-                tgs=f"🔴 {e}"
-
-            try:
-                c=get_db(); c.execute("SELECT 1").fetchone(); c.execute("PRAGMA quick_check").fetchone(); c.close()
-                dbs="🟢 ONLINE WAL"
-            except Exception as e:
-                dbs=f"🔴 {e}"
-
-            if not JSONBIN_URL:
-                jbs="⚪ DESATIVADO - sem JSONBIN_ID/KEY"
-            else:
-                try:
-                    c=get_db(); meta=c.execute("SELECT last_at,checksum FROM backup_meta WHERE rowid=1").fetchone(); c.close()
-                    if meta:
-                        jbs=f"🟢 {meta['last_at'][11:16]} {meta['checksum'][:6]}"
-                    else:
-                        jbs=f"🟡 SEM BACKUP AINDA last={int(last_backup)}"
-                except:
-                    jbs=f"🟡 PENDENTE last={int(last_backup)}"
-
+            c=get_db(); rows=c.execute("SELECT action,reason,created_at FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT 20",(str(chat_id),)).fetchall(); c.close()
+            out="\n".join([f"{r['created_at'][11:16]} {r['action']} {r['reason'][:30]}" for r in rows]) if rows else "Sem logs"
+            send(chat_id,out[:3900], mid); return
+        if cmd=="/status":
+            try: tg=telegram_req("getMe"); tgs="🟢 ONLINE" if tg.get("ok") else "🔴 OFF"
+            except: tgs="🔴 ERRO"
+            try: c=get_db(); c.execute("SELECT 1").fetchone(); c.close(); dbs="🟢 WAL"
+            except: dbs="🔴 OFF"
+            jbs=f"🟢 {int(last_backup)}" if JSONBIN_URL else "⚪ OFF"
             cfg2=get_cfg(chat_id)
-            can_del="✅" if bot_can(chat_id,"can_delete_messages") else "❌"
-            can_res="✅" if bot_can(chat_id,"can_restrict_members") else "❌"
-            can_pin="✅" if bot_can(chat_id,"can_pin_messages") else "❌"
-
-            send(chat_id,
-f"*{BOT_USERNAME or 'Orbit'} V13*\n"
-f"Telegram: {tgs}\n"
-f"SQLite: {dbs}\n"
-f"JSONBin: {jbs}\n"
-f"Perms: del:{can_del} res:{can_res} pin:{can_pin}\n"
-f"Grupo: {msg['chat'].get('title','')} ({chat_id})\n"
-f"Modo: {cfg2.get('moderation_mode')} Auto:{cfg2.get('auto_actions')}\n"
-f"Anti: link={cfg2.get('anti_link')} flood={cfg2.get('flood_limit')}/{cfg2.get('flood_window')}s mention={cfg2.get('anti_mention')}\n"
-f"Night: {cfg2.get('night_mode')} {cfg2.get('night_mode_type')} {cfg2.get('night_start')}-{cfg2.get('night_end')}\n"
-f"Warns: limite {cfg2.get('warning_limit')} mute {cfg2.get('mute_duration')}s",
-            mid)
-            return
-
+            send(chat_id,f"*{BOT_USERNAME or 'Orbit'} V13*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nPerm del:{'✅' if bot_can(chat_id,'can_delete_messages') else '❌'} res:{'✅' if bot_can(chat_id,'can_restrict_members') else '❌'}\nModo:{cfg2.get('moderation_mode')} AntiLink:{cfg2.get('anti_link')}", mid); return
         if cmd in ("/start","/help"):
-            send(chat_id,"*Orbit Alliance V13*\n/ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status\nTudo passa por authorize_action() + execute_action().", mid)
-            return
+            send(chat_id,"/ban /kick /mute /unmute /delete /warn /allowlink /pin /logs /status", mid); return
 
-    # ========== MODERAÇÃO AUTOMÁTICA - SÓ SE NÃO FOR ADMIN ==========
     if uid==BOT_ID: return
     if is_admin(chat_id,uid): return
     if not text: return
-
-    # EDITED_MESSAGE não repete WARN se já moderou
     if is_edited:
-        c=get_db()
-        already=c.execute("SELECT id FROM moderation_logs WHERE chat_id=? AND message_id=? AND success=1 LIMIT 1",(str(chat_id),str(mid))).fetchone()
-        c.close()
-        if already:
-            return
-
-    # ANTI-LINK COM DOMÍNIO REAL
+        c=get_db(); already=c.execute("SELECT id FROM moderation_logs WHERE chat_id=? AND message_id=? AND success=1 LIMIT 1",(str(chat_id),str(mid))).fetchone(); c.close()
+        if already: return
     if cfg.get("anti_link"):
         ok,dom=is_link_allowed(text,cfg.get("allowed_links",""))
         if not ok:
-            r=execute_action(chat_id,"DELETE",uid,f"link proibido {dom}",mid,source="AUTO",confidence=0.99)
+            r=execute_action(chat_id,"DELETE",uid,f"link {dom}",mid,source="AUTO",confidence=0.99)
             if r["success"]:
-                with db_lock:
-                    c=get_db()
-                    row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
-                    cnt=(row["count"]+1) if row else 1
-                    c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"link {dom}",datetime.now(timezone.utc).isoformat()))
-                    c.commit(); c.close()
+                with db_lock: c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone(); cnt=(row["count"]+1) if row else 1; c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"link {dom}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
             return
-
-    # ANTI-FLOOD MEMÓRIA
     if cfg.get("anti_flood"):
-        lim=cfg.get("flood_limit",7)
-        win=cfg.get("flood_window",15)
-        okL,_=valid_int(lim,2,100); okW,_=valid_int(win,1,300)
-        if not okL: lim=7
-        if not okW: win=15
-        dq=mem_flood[(str(chat_id),str(uid))]
-        now=time.time()
-        dq.append(now)
-        while dq and now-dq[0]>win:
-            dq.popleft()
-        if len(dq)>lim:
-            r=execute_action(chat_id,"MUTE",uid,f"flood {len(dq)}/{lim} em {win}s",mid,source="AUTO",confidence=0.9)
-            if r["success"]:
-                mem_flood[(str(chat_id),str(uid))].clear()
+        dq=mem_flood[(str(chat_id),str(uid))]; now=time.time(); dq.append(now)
+        while dq and now-dq[0]>cfg.get("flood_window",15): dq.popleft()
+        if len(dq)>cfg.get("flood_limit",7):
+            r=execute_action(chat_id,"MUTE",uid,f"flood",mid,source="AUTO",confidence=0.9)
+            if r["success"]: mem_flood[(str(chat_id),str(uid))].clear()
             return
-
-    # ANTI-MENTION
     if cfg.get("anti_mention"):
-        mentions=len(re.findall(r"@\w+",text))
-        mentions_window=mem_mention[(str(chat_id),str(uid))]
-        mentions_window.append((time.time(),mentions))
-        # limpa 30s
+        mentions=len(re.findall(r"@\w+",text)); mw=mem_mention[(str(chat_id),str(uid))]; mw.append((time.time(),mentions))
         now=time.time()
-        while mentions_window and now-mentions_window[0][0]>30:
-            mentions_window.popleft()
-        total=sum(m for _,m in mentions_window)
+        while mw and now-mw[0][0]>30: mw.popleft()
+        total=sum(m for _,m in mw)
         if mentions>=5 or total>=8:
-            execute_action(chat_id,"DELETE",uid,f"mention spam {mentions}/{total}",mid,source="AUTO",confidence=0.9)
-            return
+            execute_action(chat_id,"DELETE",uid,f"mention {mentions}",mid,source="AUTO",confidence=0.9); return
 
-# ========== INICIALIZAÇÃO ==========
 restore_safe()
-
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=PORT)
