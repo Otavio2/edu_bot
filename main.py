@@ -239,50 +239,52 @@ def execute_action(chat_id,action,target_id=None,reason="",message_id=None,admin
 
 # ========== BACKUP/RESTORE SEGURO ==========
 def restore_safe():
-    if not JSONBIN_URL: return
-    try:
-        # local existe e é valido?
-        local_exists=os.path.exists(DATABASE_PATH)
-        local_time=os.path.getmtime(DATABASE_PATH) if local_exists else 0
-        if local_exists:
-            c=get_db()
-            try: chk=c.execute("PRAGMA quick_check").fetchone()
-            except Exception as e: chk=None
+    if not JSONBIN_URL:
+        logging.warning("RESTORE skip - sem JSONBIN_URL")
+        return
+    # Se já tem banco válido local, não baixa (Render novo = arquivo não existe)
+    if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH) > 1024:
+        try:
+            c=sqlite3.connect(DATABASE_PATH)
+            chk=c.execute("PRAGMA quick_check").fetchone()
             c.close()
-            if not chk or "ok" not in str(chk[0]).lower():
-                logging.warning("DB local corrompido, tentando restore")
-            else:
-                # compara timestamps
-                r=requests.get(JSONBIN_URL+"/latest",headers=JB_HEADERS,timeout=10)
-                if r.status_code==200:
-                    remote_data=r.json().get("record",{})
-                    remote_at=remote_data.get("updated_at")
-                    if remote_at:
-                        try:
-                            rt=datetime.fromisoformat(remote_at.replace("Z","+00:00")).timestamp()
-                            if rt <= local_time:
-                                logging.info("Local mais novo que remoto, mantendo local")
-                                return
-                        except: pass
-                else: return
-        # baixa e valida
-        r=requests.get(JSONBIN_URL+"/latest",headers=JB_HEADERS,timeout=10)
-        if r.status_code!=200: return
+            if chk and "ok" in str(chk[0]).lower():
+                logging.info("RESTORE skip - local válido")
+                return
+        except:
+            pass
+    try:
+        r=requests.get(JSONBIN_URL+"/latest",headers=JB_HEADERS,timeout=12)
+        if r.status_code!=200:
+            logging.warning(f"RESTORE http {r.status_code}")
+            return
         rec=r.json().get("record",{})
-        b64=rec.get("db_base64")
-        if not b64: return
-        # checksum
+        # sua bin usa b64, antiga usa db_base64 - aceita os dois
+        b64=rec.get("db_base64") or rec.get("b64")
+        if not b64:
+            logging.warning("RESTORE vazio - sem b64")
+            return
+        # valida checksum se tiver
         if rec.get("checksum"):
             calc=hashlib.sha256(b64.encode()).hexdigest()[:16]
-            if calc!=rec.get("checksum"): log_error("RESTORE","checksum_mismatch"); return
+            if calc!=rec.get("checksum"):
+                log_error("RESTORE","checksum_mismatch")
+                return
         tmp=DATABASE_PATH+".restore"
-        with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
-        # valida restore
-        c=sqlite3.connect(tmp); chk=c.execute("PRAGMA quick_check").fetchone(); c.close()
-        if "ok" not in str(chk[0]).lower(): os.remove(tmp); log_error("RESTORE","quick_check_fail"); return
+        with open(tmp,"wb") as f:
+            f.write(base64.b64decode(b64))
+        # valida o arquivo baixado antes de trocar
+        c=sqlite3.connect(tmp)
+        chk=c.execute("PRAGMA quick_check").fetchone()
+        c.close()
+        if not chk or "ok" not in str(chk[0]).lower():
+            os.remove(tmp)
+            log_error("RESTORE","quick_check_fail")
+            return
         shutil.move(tmp,DATABASE_PATH)
-        logging.info("RESTORE ok do JSONBin mais recente")
-    except Exception as e: log_error("RESTORE",e)
+        logging.info("RESTORE ok do JSONBin")
+    except Exception as e:
+        log_error("RESTORE",e)
 
 def backup_worker():
     global backup_pending,last_backup
@@ -579,34 +581,42 @@ def process_update(update):
             send(chat_id,out[:3900], mid)
             return
 
-        if cmd=="/status":
-            # STATUS REAL - FASE 52
+                if cmd=="/status":
+            # STATUS REAL - V13 FIX
             try:
                 tg=telegram_req("getMe")
                 tgs="🟢 ONLINE" if tg.get("ok") else f"🔴 {tg.get('description','OFFLINE')}"
             except Exception as e:
                 tgs=f"🔴 {e}"
+
             try:
                 c=get_db(); c.execute("SELECT 1").fetchone(); c.execute("PRAGMA quick_check").fetchone(); c.close()
                 dbs="🟢 ONLINE WAL"
             except Exception as e:
                 dbs=f"🔴 {e}"
-            # IA health
-            ia_status="🟡 DEGRADED (sem key)" if not any(os.getenv(PROVIDERS_RAW[p]["env"]) for p in PROVIDERS_RAW) else "🟢 CONFIGURADO"
-            # JSONBin health
+
             if not JSONBIN_URL:
-                jbs="⚪ DESATIVADO"
+                jbs="⚪ DESATIVADO - sem JSONBIN_ID/KEY"
             else:
-                c=get_db(); meta=c.execute("SELECT last_at,checksum FROM backup_meta WHERE rowid=1").fetchone(); c.close()
-                if meta: jbs=f"🟢 {meta['last_at'][11:16]} {meta['checksum']}"
-                else: jbs="🟡 SEM BACKUP AINDA"
+                try:
+                    c=get_db(); meta=c.execute("SELECT last_at,checksum FROM backup_meta WHERE rowid=1").fetchone(); c.close()
+                    if meta:
+                        jbs=f"🟢 {meta['last_at'][11:16]} {meta['checksum'][:6]}"
+                    else:
+                        jbs=f"🟡 SEM BACKUP AINDA last={int(last_backup)}"
+                except:
+                    jbs=f"🟡 PENDENTE last={int(last_backup)}"
+
             cfg2=get_cfg(chat_id)
             can_del="✅" if bot_can(chat_id,"can_delete_messages") else "❌"
             can_res="✅" if bot_can(chat_id,"can_restrict_members") else "❌"
             can_pin="✅" if bot_can(chat_id,"can_pin_messages") else "❌"
+
             send(chat_id,
 f"*{BOT_USERNAME or 'Orbit'} V13*\n"
-f"Telegram: {tgs}\nSQLite: {dbs}\nIA: {ia_status}\nJSONBin: {jbs}\n"
+f"Telegram: {tgs}\n"
+f"SQLite: {dbs}\n"
+f"JSONBin: {jbs}\n"
 f"Perms: del:{can_del} res:{can_res} pin:{can_pin}\n"
 f"Grupo: {msg['chat'].get('title','')} ({chat_id})\n"
 f"Modo: {cfg2.get('moderation_mode')} Auto:{cfg2.get('auto_actions')}\n"
