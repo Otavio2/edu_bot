@@ -710,15 +710,17 @@ def process_update(update):
         c=get_db(); already=c.execute("SELECT id FROM moderation_logs WHERE chat_id=? AND message_id=? AND success=1 LIMIT 1",(str(chat_id),str(mid))).fetchone(); c.close()
         if already: return
 
-    ai_res = call_moderation_ai(text)
+        ai_res = call_moderation_ai(text)
 
     if ai_res.get("divulg",0) >= 0.7 and cfg.get("anti_divulgation"):
         r=execute_action(chat_id,"DELETE",uid,f"divulg IA {ai_res['divulg']:.2f}",mid,source="AUTO",confidence=ai_res['divulg'])
         if r["success"]:
+            global backup_pending
             with db_lock:
                 c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
                 cnt=(row["count"]+1) if row else 1
                 c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"divulg {ai_res['divulg']:.2f}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
+                backup_pending=True
         return
 
     ok,dom=is_link_allowed(text,cfg.get("allowed_links",""))
@@ -729,6 +731,7 @@ def process_update(update):
                 c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
                 cnt=(row["count"]+1) if row else 1
                 c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(uid),cnt,f"link {dom}",datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
+                backup_pending=True
         return
 
     old=list(mem_texts[(str(chat_id),str(uid))])
