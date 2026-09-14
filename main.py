@@ -700,7 +700,7 @@ def process_update(update):
                 rep_txt=rep["c"] if rep else 0
                 tox_txt=", ".join([f"{r['word']}({r['count']})" for r in tox]) if tox else "nenhuma"
             except: peak_txt="erro"; rep_txt=0; tox_txt="erro"
-            send(chat_id,f"*Orbit V16 LEARNING*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\n\n📊 *Aprendizado:*\nPico: {peak_txt} {'🔥 RÍGIDO' if is_peak else ''}\nObservação: {rep_txt} users\nPalavras tóxicas do grupo: {tox_txt}", mid); return
+            send(chat_id,f"*Orbit ADM LEARNING*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\n\n📊 *Aprendizado:*\nPico: {peak_txt} {'🔥 RÍGIDO' if is_peak else ''}\nObservação: {rep_txt} users\nPalavras tóxicas do grupo: {tox_txt}", mid); return
         if cmd in ("/start","/help"):
             send(chat_id,"🚀 *Orbit IA MAX - LEARNING*\n\n ----- Criador: Kʆɛɓɛʀ -----\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 *Bot autônomo IA:*\n• Aprende horário de pico e fica mais rígido\n• Spammer recorrente entra em observação (3 deletes = mute auto)\n• Aprende palavras que causam briga naquele grupo e apaga antes", mid); return
 
