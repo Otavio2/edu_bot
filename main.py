@@ -258,7 +258,7 @@ def init_bot():
     if d.get("ok"): BOT_ID=d["result"]["id"]; BOT_USERNAME=d["result"].get("username","").lower()
 init_bot()
 def send(chat_id, txt, reply=None):
-    p={"chat_id":chat_id,"text":str(txt)[:4000]}
+    p={"chat_id":chat_id,"text":str(txt)[:4000],"parse_mode":"Markdown"}
     if reply: p["reply_to_message_id"]=reply
     return telegram_req("sendMessage",p)
 def get_cfg(chat_id):
@@ -318,7 +318,11 @@ def bot_can(chat_id,perm):
 def authorize_action(chat_id,action,target_id=None,confidence=1.0,source="AUTO"):
     if action not in VALID_ACTIONS: return False,"acao_invalida"
     cfg=get_cfg(chat_id)
-    if str(cfg.get("enabled",1))=="0": return False,"grupo_desabilitado"
+    # CORREÇÃO 2: pega enabled da tabela groups, não de group_rules
+    try:
+        c=get_db(); g=c.execute("SELECT enabled FROM groups WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
+        if g and g["enabled"]==0: return False,"grupo_desabilitado"
+    except: pass
     if source=="AUTO":
         try: allowed=[a.upper() for a in json.loads(cfg.get("auto_actions",'["DELETE","WARN","MUTE"]'))]
         except: allowed=["DELETE","WARN","MUTE"]
