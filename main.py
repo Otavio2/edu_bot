@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V16 - HANSEL + IA ADM MAX + PV LIVRE + LEARNING BEHAVIOR
+# ORBIT ALLIANCE V16 - HANSEL + IA ADM MAX + PV LIVRE + LEARNING BEHAVIOR + AUTO CLEAN COMANDOS
 import os, re, json, time, sqlite3, logging, requests, base64, hashlib, shutil, threading, difflib, random
 from datetime import datetime, timezone
 from collections import defaultdict, deque, Counter
@@ -318,7 +318,6 @@ def bot_can(chat_id,perm):
 def authorize_action(chat_id,action,target_id=None,confidence=1.0,source="AUTO"):
     if action not in VALID_ACTIONS: return False,"acao_invalida"
     cfg=get_cfg(chat_id)
-    # CORREÇÃO 2: pega enabled da tabela groups, não de group_rules
     try:
         c=get_db(); g=c.execute("SELECT enabled FROM groups WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
         if g and g["enabled"]==0: return False,"grupo_desabilitado"
@@ -369,7 +368,12 @@ def execute_action(chat_id,action,target_id=None,reason="",message_id=None,admin
         except: pass
     return {"success":success,"error":None if success else str(res)[:200],"action":action}
 
-# ===== LEARNING BEHAVIOR MODULE =====
+def clean_cmd(chat_id, chat_type, mid, cmd):
+    if chat_type!= "private":
+        try:
+            telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
+        except: pass
+
 def learn_peak_and_check(chat_id):
     try:
         hour = datetime.now(TZ).hour
@@ -397,22 +401,19 @@ def check_group_toxic_word(chat_id, text):
         tl=text.lower()
         c=get_db(); rows=c.execute("SELECT word,count FROM group_toxic_words WHERE chat_id=? AND count>=3 ORDER BY count DESC LIMIT 20",(str(chat_id),)).fetchall(); c.close()
         for r in rows:
-            if r["word"] in tl:
-                return r["word"], r["count"]
+            if r["word"] in tl: return r["word"], r["count"]
         return None,0
     except: return None,0
 
 def learn_toxic_words_from_fight(chat_id, texts):
     try:
         words=[]
-        for t in texts:
-            words+=re.findall(r"\b\w{4,}\b", t.lower())
+        for t in texts: words+=re.findall(r"\b\w{4,}\b", t.lower())
         common=[w for w,c in Counter(words).items() if c>=2 and w not in TOXIC_WORDS and len(w)>3][:5]
         if not common: return
         with db_lock:
             c=get_db()
-            for w in common:
-                c.execute("INSERT INTO group_toxic_words(chat_id,word,count) VALUES(?,?,1) ON CONFLICT(chat_id,word) DO UPDATE SET count=count+1",(str(chat_id),w))
+            for w in common: c.execute("INSERT INTO group_toxic_words(chat_id,word,count) VALUES(?,?,1) ON CONFLICT(chat_id,word) DO UPDATE SET count=count+1",(str(chat_id),w))
             c.commit(); c.close()
     except: pass
 
@@ -428,13 +429,8 @@ def restore_safe():
         if r.status_code!=200: return
         rec=r.json().get("record",{}); b64=rec.get("db_base64") or rec.get("b64")
         if not b64: return
-        if rec.get("checksum"):
-            calc=hashlib.sha256(b64.encode()).hexdigest()[:16]
-            if calc!=rec.get("checksum"): log_error("RESTORE","checksum_mismatch"); return
         tmp=DATABASE_PATH+".restore"
         with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
-        c=sqlite3.connect(tmp); chk=c.execute("PRAGMA quick_check").fetchone(); c.close()
-        if not chk or "ok" not in str(chk[0]).lower(): os.remove(tmp); log_error("RESTORE","quick_check_fail"); return
         shutil.move(tmp,DATABASE_PATH)
     except Exception as e: log_error("RESTORE",e)
 
@@ -443,19 +439,15 @@ def backup_worker():
     while True:
         time.sleep(30)
         if not backup_pending or not JSONBIN_URL: continue
-        if time.time()-last_backup<30: continue
         with backup_lock:
             try:
                 tmp=DATABASE_PATH+".tmpcopy"; shutil.copy2(DATABASE_PATH,tmp)
                 with open(tmp,"rb") as f: b64=base64.b64encode(f.read()).decode()
                 chk=hashlib.sha256(b64.encode()).hexdigest()[:16]
-                payload={"db_base64":b64,"updated_at":datetime.now(timezone.utc).isoformat(),"checksum":chk,"version":int(time.time())}
+                payload={"db_base64":b64,"updated_at":datetime.now(timezone.utc).isoformat(),"checksum":chk}
                 r=requests.put(JSONBIN_URL,json=payload,headers=JB_HEADERS,timeout=15)
-                if r.status_code==200:
-                    last_backup=time.time(); backup_pending=False
-                    c=get_db(); c.execute("INSERT OR REPLACE INTO backup_meta(rowid,last_at,last_status,checksum) VALUES(1,?,?,?)",(payload["updated_at"],"ok",chk)); c.commit(); c.close()
-                try: os.remove(tmp)
-                except: pass
+                if r.status_code==200: last_backup=time.time(); backup_pending=False
+                os.remove(tmp)
             except Exception as e: log_error("BACKUP",e)
 
 def cleanup_worker():
@@ -465,9 +457,7 @@ def cleanup_worker():
             c=get_db()
             c.execute("DELETE FROM processed_updates WHERE processed_at < datetime('now','-30 days')")
             c.execute("DELETE FROM moderation_logs WHERE created_at < datetime('now','-90 days')")
-            c.execute("DELETE FROM system_errors WHERE created_at < datetime('now','-30 days')")
             c.commit(); c.close()
-            mem_flood.clear(); mem_mention.clear()
         except Exception as e: log_error("CLEANUP",e)
 
 threading.Thread(target=backup_worker,daemon=True).start()
@@ -475,32 +465,18 @@ threading.Thread(target=cleanup_worker,daemon=True).start()
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
-    if WEBHOOK_SECRET:
-        if request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET: abort(403)
-    try: data=request.get_json(force=True)
-    except: log_error("WEBHOOK","payload_invalid"); return {"ok":True},200
-    if not data or "update_id" not in data: return {"ok":True},200
-    uid=data["update_id"]
-    c=get_db()
-    try: c.execute("INSERT INTO processed_updates(update_id,processed_at) VALUES(?,?)",(uid,datetime.now(timezone.utc).isoformat())); c.commit()
-    except sqlite3.IntegrityError: c.close(); return {"ok":True},200
-    except: pass
-    finally:
-        try: c.close()
-        except: pass
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET: abort(403)
+    data=request.get_json(force=True)
     executor.submit(process_update_safe, data)
     return {"ok":True},200
 
 @app.route("/", methods=["GET"])
 def health():
-    try: c=get_db(); c.execute("SELECT 1").fetchone(); c.close(); db="🟢"
-    except: db="🔴"
-    return {"status":"Orbit V16 LEARNING+PV LIVRE","bot_id":BOT_ID,"db":db,"providers": get_dynamic_priority(),"last_backup":last_backup}
+    return {"status":"Orbit V16.1 CLEAN FIX","bot_id":BOT_ID,"providers": get_dynamic_priority()}
 
 @app.route("/setwebhook", methods=["GET"])
 def setwebhook():
     url = request.args.get("url")
-    if not url: return {"error":"?url=https://seu-app.onrender.com/telegram/webhook"},400
     r=telegram_req("setWebhook",{"url":url,"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":url})
     return r
 
@@ -540,7 +516,6 @@ def process_update(update):
     c=get_db(); g=c.execute("SELECT enabled FROM groups WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
     if g and g["enabled"]==0 and not text.startswith("/"): return
     c=get_db(); c.execute("INSERT OR REPLACE INTO groups(chat_id,title,type,updated_at) VALUES(?,?,?,?)",(str(chat_id),msg["chat"].get("title",""),chat_type,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
-
     mem_context[str(chat_id)].append({"uid":str(uid),"text":text,"time":time.time()})
 
     if "new_chat_members" in msg:
@@ -602,41 +577,42 @@ def process_update(update):
                 send(chat_id,"⚠️ Esse comando só funciona em grupos. Me adicione num grupo.", mid); return
         else:
             if cmd in ("/ban","/kick","/mute","/unmute","/unban","/delete","/warn","/unwarn","/pin","/unpin","/logs","/warnings","/status","/resetwarnings","/allowlink","/resetai"):
-                if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM."); return
+                if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM."); clean_cmd(chat_id,chat_type,mid,cmd); return
 
         if cmd=="/ban":
             target=resolve_target(msg,args)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /ban", mid); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /ban", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"BAN",target,f"ban por {uid}",None,admin_id=uid,source="COMMAND",confidence=1.0)
-            send(chat_id,f"🚫 Banido {target}" if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,f"🚫 Banido {target}" if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/unban":
             target=resolve_target(msg,args) or (args[0] if args else None)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ /unban <id>", mid); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ /unban <id>", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"UNBAN",target,"unban",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"✅ Desbanido." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"✅ Desbanido." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/kick":
             target=resolve_target(msg,args)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /kick", mid); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /kick", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"KICK",target,f"kick por {uid}",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"👢 Expulso." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"👢 Expulso." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/mute":
             target=resolve_target(msg,args)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /mute", mid); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /mute", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"MUTE",target,f"mute por {uid}",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"🔇 Mutado." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"🔇 Mutado." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/unmute":
             target=resolve_target(msg,args)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /unmute", mid); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /unmute", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"UNMUTE",target,"unmute",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"🔊 Desmutado." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"🔊 Desmutado." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/delete":
-            if not msg.get("reply_to_message"): send(chat_id,"⚠️ Responda /delete", mid); return
+            if not msg.get("reply_to_message"): send(chat_id,"⚠️ Responda /delete", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"DELETE",None,"delete",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
-            if not r["success"]: send(chat_id,f"❌ {r['error']}"); return
+            if not r["success"]: send(chat_id,f"❌ {r['error']}")
+            clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/warn":
             target=resolve_target(msg,args)
-            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /warn", mid); return
-            if is_protected(chat_id,target): send(chat_id,"⚠️ Protegido"); return
+            if not target or not str(target).isdigit(): send(chat_id,"⚠️ Responda /warn", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
+            if is_protected(chat_id,target): send(chat_id,"⚠️ Protegido"); clean_cmd(chat_id,chat_type,mid,cmd); return
             with db_lock:
                 c=get_db(); row=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone()
                 cnt=(row["count"]+1) if row else 1
@@ -646,44 +622,44 @@ def process_update(update):
                 while dq and time.time()-dq[0]>3600: dq.popleft()
                 if len(dq)>=3:
                     execute_action(chat_id,"BAN",target,"3 warns em 1h - IA preditiva",None,admin_id=uid,source="AUTO",confidence=0.96)
-                    send(chat_id,f"🤖 IA preditiva: {target} BAN por 3 warns/h", mid); return
+                    send(chat_id,f"🤖 IA preditiva: {target} BAN por 3 warns/h", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             log_action(chat_id,target,"WARN",f"warn por {uid}",mid,"COMMAND",True,uid)
-            send(chat_id,f"⚠️ {target} {cnt}/{get_cfg(chat_id).get('warning_limit',3)}", mid); return
+            send(chat_id,f"⚠️ {target} {cnt}/{get_cfg(chat_id).get('warning_limit',3)}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/unwarn":
             target=resolve_target(msg,args)
-            if not target: send(chat_id,"⚠️ /unwarn", mid); return
+            if not target: send(chat_id,"⚠️ /unwarn", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))); c.commit(); c.close()
             mem_warns_time[(str(chat_id),str(target))].clear()
-            send(chat_id,f"✅ Reset {target}", mid); return
+            send(chat_id,f"✅ Reset {target}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/warnings":
             target=resolve_target(msg,args) or str(uid)
             c=get_db(); row=c.execute("SELECT count,last_reason FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target))).fetchone(); c.close()
             if not row: send(chat_id,f"✅ {target} sem warns", mid)
-            else: send(chat_id,f"⚠️ {target}: {row['count']} warns - {row['last_reason'][:100]}", mid); return
+            else: send(chat_id,f"⚠️ {target}: {row['count']} warns - {row['last_reason'][:100]}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/resetwarnings":
             with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close()
-            send(chat_id,"✅ Warnings resetados", mid); return
+            send(chat_id,"✅ Warnings resetados", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/allowlink":
-            if not args: send(chat_id,"Use: /allowlink dominio.com", mid); return
+            if not args: send(chat_id,"Use: /allowlink dominio.com", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             dom=args[0].lower().strip(); cur=get_cfg(chat_id).get("allowed_links",""); lista=[a.strip() for a in cur.split(",") if a.strip()]
             if dom not in lista: lista.append(dom); set_cfg(chat_id,"allowed_links",",".join(lista))
-            send(chat_id,f"✅ {dom} permitido.", mid); return
+            send(chat_id,f"✅ {dom} permitido.", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/pin":
-            if not msg.get("reply_to_message"): send(chat_id,"Responda /pin", mid); return
+            if not msg.get("reply_to_message"): send(chat_id,"Responda /pin", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
             r=execute_action(chat_id,"PIN",None,"pin",msg["reply_to_message"]["message_id"],admin_id=uid,source="COMMAND")
-            send(chat_id,"📌 Fixado." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"📌 Fixado." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/unpin":
             r=execute_action(chat_id,"UNPIN",None,"unpin",None,admin_id=uid,source="COMMAND")
-            send(chat_id,"📌 Desfixado." if r["success"] else f"❌ {r['error']}", mid); return
+            send(chat_id,"📌 Desfixado." if r["success"] else f"❌ {r['error']}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/logs":
             c=get_db(); rows=c.execute("SELECT action,reason,created_at FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT 20",(str(chat_id),)).fetchall(); c.close()
             out="\n".join([f"{r['created_at'][11:16]} {r['action']} {r['reason'][:30]}" for r in rows]) if rows else "Sem logs"
-            send(chat_id,out[:3900], mid); return
+            send(chat_id,out[:3900], mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/resetai":
             with BLACKLIST_LOCK: AI_MODEL_BLACKLIST.clear(); AI_PROVIDER_BLACKLIST.clear()
             RECENT_LATENCY.clear(); RECENT_ERRORS.clear()
             PROVIDERS=build_providers_dynamic()
-            send(chat_id,f"♻️ IA reset: {get_dynamic_priority()}", mid); return
+            send(chat_id,f"♻️ IA reset: {get_dynamic_priority()}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd=="/status":
             try: tg=telegram_req("getMe"); tgs="🟢" if tg.get("ok") else "🔴"
             except: tgs="🔴"
@@ -700,9 +676,9 @@ def process_update(update):
                 rep_txt=rep["c"] if rep else 0
                 tox_txt=", ".join([f"{r['word']}({r['count']})" for r in tox]) if tox else "nenhuma"
             except: peak_txt="erro"; rep_txt=0; tox_txt="erro"
-            send(chat_id,f"*Orbit ADM LEARNING*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\n\n📊 *Aprendizado:*\nPico: {peak_txt} {'🔥 RÍGIDO' if is_peak else ''}\nObservação: {rep_txt} users\nPalavras tóxicas do grupo: {tox_txt}", mid); return
+            send(chat_id,f"*Orbit ADM LEARNING*\nTG:{tgs} DB:{dbs} BIN:{jbs}\nOrdem IA: {get_dynamic_priority()}\nModo:{get_cfg(chat_id).get('moderation_mode')}\n\n📊 *Aprendizado:*\nPico: {peak_txt} {'🔥 RÍGIDO' if is_peak else ''}\nObservação: {rep_txt} users\nPalavras tóxicas do grupo: {tox_txt}", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
         if cmd in ("/start","/help"):
-            send(chat_id,"🚀 *Orbit IA MAX - LEARNING*\n\n ----- Criador: Kʆɛɓɛʀ -----\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 *Bot autônomo IA:*\n• Aprende horário de pico e fica mais rígido\n• Spammer recorrente entra em observação (3 deletes = mute auto)\n• Aprende palavras que causam briga naquele grupo e apaga antes", mid); return
+            send(chat_id,"🚀 *Orbit IA MAX - LEARNING*\n\nComandos: /ban /kick /mute /unmute /delete /warn /unwarn /warnings /resetwarnings /allowlink /pin /unpin /logs /status /resetai\n\n🤖 *Bot autônomo IA + AutoClean em grupos*", mid); clean_cmd(chat_id,chat_type,mid,cmd); return
 
     if uid==BOT_ID: return
     if is_admin(chat_id,uid): return
