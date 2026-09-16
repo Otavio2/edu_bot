@@ -86,16 +86,32 @@ DIVULGA_WORDS = {"entra","ganhe","lucro","renda","grátis","gratis","promoção"
 TOXIC_WORDS = {"lixo","burro","otario","otário","idiota","fdp","vsf","arrombado","desgraça","corno","vagabundo"}
 SENSUAL_WORDS = {"sem cueca","sem calcinha","pelado","pelada","tesão","tesao","pau","buceta","transar","sexo","gozar","nudes","onlyfans","xvideo","porno","punheta","de toalha","sem roupa"}
 
-def ai_sensual_score(text): tl=normalize_text(text); score=0; [score:=score+0.45 for w in SENSUAL_WORDS if w in tl];
-    if "andar sem cueca" in tl: score=0.85
-    if "pelado" in tl and "casa" in tl: score=0.85
-    return min(score,1.0)
-def ai_toxic_score(text): tl=normalize_text(text); return min(sum(0.35 for w in TOXIC_WORDS if w in tl),1.0)
-def ai_divulgacao_score(text): tl=text.lower(); sc=0;
-    if re.search(r"https?://|t\.me/|wa\.me|discord\.gg",tl): sc+=0.4
+def ai_sensual_score(text):
+    tl = normalize_text(text)
+    score = 0
+    for w in SENSUAL_WORDS:
+        if w in tl:
+            score += 0.45
+    if "andar sem cueca" in tl:
+        score = 0.85
+    if "pelado" in tl and "casa" in tl:
+        score = 0.85
+    return min(score, 1.0)
+
+def ai_toxic_score(text):
+    tl = normalize_text(text)
+    return min(sum(0.35 for w in TOXIC_WORDS if w in tl), 1.0)
+
+def ai_divulgacao_score(text):
+    tl = text.lower()
+    sc = 0
+    if re.search(r"https?://|t\.me/|wa\.me|discord\.gg", tl):
+        sc += 0.4
     for w in DIVULGA_WORDS:
-        if w in tl: sc+=0.15
-    return min(sc,1.0)
+        if w in tl:
+            sc += 0.15
+    return min(sc, 1.0)
+    
 def ai_spam_score(texts):
     if len(texts)<3: return 0
     last=normalize_text(texts[-1]) if texts else ""
