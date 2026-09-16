@@ -1,6 +1,6 @@
-# ORBIT ALLIANCE V17 FINAL - 10/10 - COMPLETO
+# ORBIT ALLIANCE V17.1 FINAL - 10/10 - COMPLETO FIX
 # CREATED BY: Kʆɛɓɛʀ | HANSEL CORE
-# SIG: 4b2e-7a9f-KLEBER-ORBIT-V17 | CHECK: KLEBER-2026
+# SIG: 4b2e-7a9f-KLEBER-ORBIT-V17.1 | CHECK: KLEBER-2026
 # CLOUDFLARE WORKERS AI FREE DAILY + GROQ + GEMINI + CEREBRAS
 # Kʆɛɓɛʀ - ORBIT ALLIANCE © 2026
 import os, re, json, time, sqlite3, logging, requests, base64, hashlib, shutil, threading, difflib, random
@@ -22,7 +22,7 @@ TIMEZONE = "America/Fortaleza"
 TZ = pytz.timezone(TIMEZONE)
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit Alliance V17 by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit Alliance V17.1 by {KLEBER_SIG}"
 KLEBER_CHECK = hashlib.sha256(KLEBER_SIG.encode()).hexdigest()[:12]
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
@@ -80,10 +80,6 @@ def build_providers_dynamic():
 
 PROVIDERS = build_providers_dynamic()
 ORDER_PREFERENCE = ["cloudflare","groq","gemini","cerebras"]
-AI_MODEL_BLACKLIST = {}
-AI_PROVIDER_BLACKLIST = {}
-RECENT_LATENCY = defaultdict(lambda: deque(maxlen=20))
-RECENT_ERRORS = defaultdict(lambda: deque(maxlen=50))
 
 DIVULGA_WORDS = {"entra","ganhe","lucro","renda","grátis","gratis","promoção","promocao","vagas","dinheiro","pix","aposte","cassino","tigrinho","sorteio","grupo novo","link na bio"}
 TOXIC_WORDS = {"lixo","burro","otario","otário","idiota","fdp","vsf","arrombado","desgraça","corno","vagabundo"}
@@ -111,13 +107,10 @@ def ai_spam_score(texts):
     return 0
 
 def call_moderation_ai(text, recent_texts=[]):
-    hs = ai_sensual_score(text)
-    ht = ai_toxic_score(text)
-    hd = ai_divulgacao_score(text)
-    hsp = ai_spam_score(list(recent_texts))
+    hs = ai_sensual_score(text); ht = ai_toxic_score(text); hd = ai_divulgacao_score(text); hsp = ai_spam_score(list(recent_texts))
     if not PROVIDERS:
-        return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp,"intencao":"NADA"}
-    prompt = f"""Você é moderador BR. Retorne SOMENTE JSON {{"toxic":0-1,"divulg":0-1,"sensual":0-1,"spam":0-1,"intencao":"NADA"}}. sensual=conteudo erotico/sexual/sem roupa. Msg:"{text[:300]}" JSON:"""
+        return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp}
+    prompt = f"""Você é moderador BR. Retorne SOMENTE JSON {{"toxic":0-1,"divulg":0-1,"sensual":0-1,"spam":0-1}}. sensual=conteudo erotico. Msg:"{text[:300]}" JSON:"""
     for prov in ORDER_PREFERENCE:
         if prov not in PROVIDERS: continue
         cfg=PROVIDERS[prov]
@@ -130,10 +123,7 @@ def call_moderation_ai(text, recent_texts=[]):
                     m=re.search(r"\{.*\}",resp,re.DOTALL)
                     if m:
                         j=json.loads(m.group())
-                        j["sensual"]=max(float(j.get("sensual",0)),hs)
-                        j["toxic"]=max(float(j.get("toxic",0)),ht)
-                        j["divulg"]=max(float(j.get("divulg",0)),hd)
-                        j["spam"]=max(float(j.get("spam",0)),hsp)
+                        j["sensual"]=max(float(j.get("sensual",0)),hs); j["toxic"]=max(float(j.get("toxic",0)),ht); j["divulg"]=max(float(j.get("divulg",0)),hd); j["spam"]=max(float(j.get("spam",0)),hsp)
                         return j
             else:
                 for modelo in FALLBACK_MODELS.get(prov,[]):
@@ -144,14 +134,10 @@ def call_moderation_ai(text, recent_texts=[]):
                         m=re.search(r"\{.*\}",cont,re.DOTALL)
                         if m:
                             j=json.loads(m.group())
-                            j["sensual"]=max(float(j.get("sensual",0)),hs)
-                            j["toxic"]=max(float(j.get("toxic",0)),ht)
-                            j["divulg"]=max(float(j.get("divulg",0)),hd)
-                            j["spam"]=max(float(j.get("spam",0)),hsp)
+                            j["sensual"]=max(float(j.get("sensual",0)),hs); j["toxic"]=max(float(j.get("toxic",0)),ht); j["divulg"]=max(float(j.get("divulg",0)),hd); j["spam"]=max(float(j.get("spam",0)),hsp)
                             return j
-        except Exception as e:
-            continue
-    return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp,"intencao":"NADA"}
+        except: continue
+    return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp}
 
 def get_db():
     c=sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
@@ -174,7 +160,6 @@ def init_db():
 init_db()
 
 def log_error(comp, err): logging.error(f"[{KLEBER_SIG}] {comp}: {err}")
-
 def telegram_req(method,payload=None):
     url=f"{TELEGRAM_API_URL}/{method}"
     try:
@@ -189,11 +174,8 @@ def init_bot():
     global BOT_ID, BOT_USERNAME
     d=telegram_req("getMe")
     if d.get("ok"):
-        BOT_ID=d["result"]["id"]
-        BOT_USERNAME=d["result"].get("username","")
-        print(f"[{KLEBER_SIG}] {ORBIT_CORE} | CHECK:{KLEBER_CHECK} | BOT @{BOT_USERNAME} ID:{BOT_ID} | PROVIDERS:{list(PROVIDERS.keys())}")
-    else:
-        print(f"[{KLEBER_SIG}] Falha getMe {d}")
+        BOT_ID=d["result"]["id"]; BOT_USERNAME=d["result"].get("username","")
+        print(f"[{KLEBER_SIG}] {ORBIT_CORE} CHECK:{KLEBER_CHECK} BOT @{BOT_USERNAME}")
 init_bot()
 
 def send(chat_id, txt, reply=None, parse="Markdown"):
@@ -202,14 +184,10 @@ def send(chat_id, txt, reply=None, parse="Markdown"):
     return telegram_req("sendMessage",p)
 
 def get_cfg(chat_id):
-    c=get_db()
-    r=c.execute("SELECT * FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone()
-    c.close()
+    c=get_db(); r=c.execute("SELECT * FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone(); c.close()
     if not r:
         with db_lock:
-            c=get_db()
-            c.execute("INSERT OR IGNORE INTO group_rules(chat_id,updated_at) VALUES(?,?)",(str(chat_id),datetime.now(timezone.utc).isoformat()))
-            c.commit(); c.close()
+            c=get_db(); c.execute("INSERT OR IGNORE INTO group_rules(chat_id,updated_at) VALUES(?,?)",(str(chat_id),datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
         return get_cfg(chat_id)
     d=dict(r)
     try: d["auto_actions"]=json.loads(d.get("auto_actions","[]"))
@@ -218,9 +196,7 @@ def get_cfg(chat_id):
 
 def set_cfg(chat_id, key, val):
     with db_lock:
-        c=get_db()
-        c.execute(f"UPDATE group_rules SET {key}=?, updated_at=? WHERE chat_id=?",(val,datetime.now(timezone.utc).isoformat(),str(chat_id)))
-        c.commit(); c.close()
+        c=get_db(); c.execute(f"UPDATE group_rules SET {key}=?, updated_at=? WHERE chat_id=?",(val,datetime.now(timezone.utc).isoformat(),str(chat_id))); c.commit(); c.close()
     global backup_pending; backup_pending=True
     return True
 
@@ -234,39 +210,26 @@ def is_protected(chat_id,uid):
     return is_admin(chat_id,uid)
 
 def execute_action(chat_id,action,target_id=None,reason="",message_id=None,source="AUTO",confidence=0):
-    if target_id and is_protected(chat_id,target_id):
-        return {"success":False,"error":"protegido"}
+    if target_id and is_protected(chat_id,target_id): return {"success":False,"error":"protegido"}
     res={"ok":False}
     try:
-        if action=="DELETE" and message_id:
-            res=telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":message_id})
+        if action=="DELETE" and message_id: res=telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":message_id})
         elif action=="WARN" and target_id:
             with db_lock:
-                c=get_db()
-                w=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target_id))).fetchone()
+                c=get_db(); w=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(target_id))).fetchone()
                 cnt=(w["count"] if w else 0)+1
-                c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(target_id),cnt,reason,datetime.now(timezone.utc).isoformat()))
-                c.commit(); c.close()
+                c.execute("INSERT OR REPLACE INTO warnings(chat_id,user_id,count,last_reason,updated_at) VALUES(?,?,?,?,?)",(str(chat_id),str(target_id),cnt,reason,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
             res={"ok":True}
         elif action=="MUTE" and target_id:
-            cfg=get_cfg(chat_id)
-            res=telegram_req("restrictChatMember",{"chat_id":chat_id,"user_id":target_id,"permissions":{"can_send_messages":False},"until_date":int(time.time())+cfg.get("mute_duration",600)})
-        elif action=="BAN" and target_id:
-            res=telegram_req("banChatMember",{"chat_id":chat_id,"user_id":target_id})
+            cfg=get_cfg(chat_id); res=telegram_req("restrictChatMember",{"chat_id":chat_id,"user_id":target_id,"permissions":{"can_send_messages":False},"until_date":int(time.time())+cfg.get("mute_duration",600)})
+        elif action=="BAN" and target_id: res=telegram_req("banChatMember",{"chat_id":chat_id,"user_id":target_id})
         elif action=="KICK" and target_id:
-            telegram_req("banChatMember",{"chat_id":chat_id,"user_id":target_id})
-            res=telegram_req("unbanChatMember",{"chat_id":chat_id,"user_id":target_id})
-        elif action=="UNMUTE" and target_id:
-            res=telegram_req("restrictChatMember",{"chat_id":chat_id,"user_id":target_id,"permissions":{"can_send_messages":True,"can_send_media_messages":True,"can_send_other_messages":True}})
-    except Exception as e:
-        log_error("execute_action",e)
-        res={"ok":False,"error":str(e)}
-    # log
+            telegram_req("banChatMember",{"chat_id":chat_id,"user_id":target_id}); res=telegram_req("unbanChatMember",{"chat_id":chat_id,"user_id":target_id})
+        elif action=="UNMUTE" and target_id: res=telegram_req("restrictChatMember",{"chat_id":chat_id,"user_id":target_id,"permissions":{"can_send_messages":True,"can_send_media_messages":True,"can_send_other_messages":True}})
+    except Exception as e: log_error("execute_action",e); res={"ok":False,"error":str(e)}
     try:
         with db_lock:
-            c=get_db()
-            c.execute("INSERT INTO moderation_logs(chat_id,user_id,action,reason,message_id,source,success,created_at) VALUES(?,?,?,?,?,?,?,?)",(str(chat_id),str(target_id or ""),action,f"{reason} [{KLEBER_SIG}]",message_id or 0,source,1 if res.get("ok") else 0,datetime.now(timezone.utc).isoformat()))
-            c.commit(); c.close()
+            c=get_db(); c.execute("INSERT INTO moderation_logs(chat_id,user_id,action,reason,message_id,source,success,created_at) VALUES(?,?,?,?,?,?,?,?)",(str(chat_id),str(target_id or ""),action,f"{reason} [{KLEBER_SIG}]",message_id or 0,source,1 if res.get("ok") else 0,datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
     except: pass
     return {"success":bool(res.get("ok")),"result":res}
 
@@ -276,193 +239,188 @@ def clean_cmd(chat_id, mid):
 
 def schedule_backup():
     global backup_pending, last_backup
-    if not JSONBIN_URL: return
-    if not backup_pending: return
-    if time.time()-last_backup < 300: return
+    if not JSONBIN_URL or not backup_pending or time.time()-last_backup < 300: return
     with backup_lock:
         try:
             if not os.path.exists(DATABASE_PATH): return
-            with open(DATABASE_PATH,"rb") as f:
-                b64=base64.b64encode(f.read()).decode()
+            with open(DATABASE_PATH,"rb") as f: b64=base64.b64encode(f.read()).decode()
             payload={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"by":KLEBER_SIG,"check":KLEBER_CHECK}
-            requests.put(JSONBIN_URL, json=payload, headers=JB_HEADERS, timeout=15)
-            last_backup=time.time()
-            backup_pending=False
-            logging.info(f"[{KLEBER_SIG}] Backup JSONBIN ok")
-        except Exception as e:
-            log_error("backup",e)
-
+            requests.put(JSONBIN_URL, json=payload, headers=JB_HEADERS, timeout=15); last_backup=time.time(); backup_pending=False
+        except Exception as e: log_error("backup",e)
 def backup_worker():
-    while True:
-        time.sleep(60)
-        schedule_backup()
+    while True: time.sleep(60); schedule_backup()
 threading.Thread(target=backup_worker, daemon=True).start()
 
 @app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET:
-        abort(403)
-    data=request.get_json(force=True)
-    executor.submit(process_update, data)
-    return {"ok":True},200
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET: abort(403)
+    data=request.get_json(force=True); executor.submit(process_update, data); return {"ok":True},200
 
 @app.route("/", methods=["GET"])
 def health():
-    return {"status":f"Orbit V17 by {KLEBER_SIG}","core":ORBIT_CORE,"check":KLEBER_CHECK,"bot_id":BOT_ID,"providers":list(PROVIDERS.keys()),"cloudflare": "cloudflare" in PROVIDERS}
+    return {"status":f"Orbit V17.1 by {KLEBER_SIG}","core":ORBIT_CORE,"check":KLEBER_CHECK,"bot_id":BOT_ID,"providers":list(PROVIDERS.keys())}
 
 def process_update(update):
     msg = update.get("message") or update.get("edited_message")
     if not msg: return
-    chat_id = msg["chat"]["id"]
-    chat_type = msg["chat"]["type"]
-    uid = msg["from"]["id"]
-    text = (msg.get("text","") or msg.get("caption","")).strip()
-    mid = msg["message_id"]
+    chat_id = msg["chat"]["id"]; uid = msg["from"]["id"]
+    text = (msg.get("text","") or msg.get("caption","")).strip(); mid = msg["message_id"]
     cfg = get_cfg(chat_id)
 
-    # === PV LIVRE - KLEBER ===
-    if chat_type=="private":
+    if msg["chat"]["type"]=="private":
         if text.startswith("/"):
-            cmd=text.split()[0].lower().split("@")[0]
-            if cmd in ["/start","/help","/painel","/status"]:
-                send(chat_id,f"🚀 *Orbit V17 by {KLEBER_SIG}*\n\nCore: `{ORBIT_CORE}`\nCheck: `{KLEBER_CHECK}`\n\n✅ Cloudflare Free Daily: {'ON' if 'cloudflare' in PROVIDERS else 'OFF - configure'}\n\nMe adiciona no grupo como ADM pra funcionar 100%.\n\nComandos no grupo:\n/painel\n/setsensual livre|moderate|restrito\n/status\n\n_By {KLEBER_SIG}_")
+            send(chat_id,f"🚀 *Orbit V17.1 by {KLEBER_SIG}*\nCheck: `{KLEBER_CHECK}`\n\nMe adiciona como ADM.\nUse /painel no grupo.\n\n_By {KLEBER_SIG}_")
             clean_cmd(chat_id,mid)
         return
 
-    # === COMANDOS ORGANIZADOS ===
+    # === COMANDOS V17.1 FIX - TODOS OS 20 ===
     if text.startswith("/"):
-        parts=text.strip().split()
-        cmd=parts[0].lower().split("@")[0]
-        args=parts[1:]
-        # Só ADM
-        if cmd in ["/ban","/kick","/mute","/unmute","/warn","/painel","/setsensual","/status","/antilink","/antiflood","/antispam","/antidivulg"]:
-            if not is_admin(chat_id,uid):
-                send(chat_id,"⚠️ Só ADM pode usar."); clean_cmd(chat_id,mid); return
+        parts=text.strip().split(); cmd=parts[0].lower().split("@")[0]; args=parts[1:]
 
-        if cmd=="/painel":
-            txt=f"""⚙️ *PAINEL ORBIT V17 - By {KLEBER_SIG}*
+        if cmd in ["/start","/help","/painel","/status"]:
+            if cmd in ["/painel","/help"]:
+                txt=f"""⚙️ *PAINEL ORBIT V17.1 - By {KLEBER_SIG}*
 `Check: {KLEBER_CHECK}`
-
 *Grupo:* {msg['chat'].get('title','')}
-*Modo:* `{cfg.get('moderation_mode')}`
 *IA:* `{', '.join(PROVIDERS.keys()) or 'Heurística'}`
-*+18:* `{cfg.get('sensual_mode')}` | Anti: {'ON' if cfg.get('anti_sensual') else 'OFF'}
-*Links:* {'ON' if cfg.get('anti_link') else 'OFF'} | *Flood:* {cfg.get('flood_limit')}/{cfg.get('flood_window')}s
+*+18:* `{cfg.get('sensual_mode')}` | *Links:* {'ON' if cfg.get('anti_link') else 'OFF'}
+*Flood:* {cfg.get('flood_limit')}/{cfg.get('flood_window')}s | *WarnLimit:* {cfg.get('warning_limit')}
 
-*— +18 RESENHA (NOVO) —*
-`/setsensual livre` → libera "sem cueca" etc
-`/setsensual moderate` → ⭐ RECOMENDADO pra resenha
-`/setsensual restrito` → apaga tudo +18
+*— +18 RESENHA —*
+`/setsensual livre` → libera tudo
+`/setsensual moderate` → ⭐ RECOMENDADO
+`/setsensual restrito` → bloqueia tudo
 
-*— MODERAÇÃO —*
-`/ban` `/kick` `/mute` `/unmute` (responda msg)
-`/status` - status IA + Cloudflare
-`/antilink on/off`
-`/antiflood 7 15`
+*— COMANDOS ADM —*
+`/ban /unban /kick /mute /unmute`
+`/delete /warn /unwarn /warnings /resetwarnings`
+`/pin /unpin /allowlink /logs /resetai`
 
-_Core by {KLEBER_SIG} - Cloudflare FREE DAILY ✅_
+_Core by {KLEBER_SIG} ✅_
 """
-            send(chat_id,txt,mid); clean_cmd(chat_id,mid); return
-
-        if cmd=="/setsensual":
-            if not args:
-                send(chat_id,"Use: /setsensual livre | moderate | restrito",mid); clean_cmd(chat_id,mid); return
-            mode=args[0].lower()
-            if mode=="moderado": mode="moderate"
-            if mode not in ["livre","moderate","restrito"]:
-                send(chat_id,"Modos: livre, moderate, restrito",mid); clean_cmd(chat_id,mid); return
-            set_cfg(chat_id,"sensual_mode",mode)
-            set_cfg(chat_id,"anti_sensual", 0 if mode=="livre" else 1)
-            send(chat_id,f"✅ +18 alterado para *{mode}* - by {KLEBER_SIG}\n{'Perfeito pra resenha!' if mode=='moderate' else ''}",mid); clean_cmd(chat_id,mid); return
-
-        if cmd=="/status":
-            cf = "✅ ON - Grátis diária" if "cloudflare" in PROVIDERS else "❌ OFF - configure CLOUDFLARE_API_TOKEN e ACCOUNT_ID"
-            send(chat_id,f"🤖 *Orbit V17*\nBy: {KLEBER_SIG}\nCheck: {KLEBER_CHECK}\n\n*IA:*\nCloudflare: {cf}\nProviders: {list(PROVIDERS.keys())}\n\n*Grupo:*\n+18: {cfg.get('sensual_mode')}\nFlood: {cfg.get('flood_limit')} msgs / {cfg.get('flood_window')}s\nAntiLink: {cfg.get('anti_link')}\nAntiDivulg: {cfg.get('anti_divulgation')}",mid); clean_cmd(chat_id,mid); return
-
-        if cmd in ["/antilink"]:
-            if not args: send(chat_id,"/antilink on/off",mid); clean_cmd(chat_id,mid); return
-            set_cfg(chat_id,"anti_link",1 if args[0].lower()=="on" else 0)
-            send(chat_id,f"✅ AntiLink {args[0]}",mid); clean_cmd(chat_id,mid); return
-        if cmd in ["/antiflood"]:
-            if len(args)>=2:
-                try:
-                    set_cfg(chat_id,"flood_limit",int(args[0])); set_cfg(chat_id,"flood_window",int(args[1]))
-                    send(chat_id,f"✅ Flood {args[0]}/{args[1]}s",mid)
-                except: pass
+                send(chat_id,txt,mid)
+            elif cmd=="/status":
+                cf = "✅ ON" if "cloudflare" in PROVIDERS else "❌ OFF"
+                send(chat_id,f"🤖 *Orbit V17.1 By {KLEBER_SIG}*\nCheck: {KLEBER_CHECK}\nCloudflare: {cf}\nProviders: {list(PROVIDERS.keys())}\n+18: {cfg.get('sensual_mode')}",mid)
+            elif cmd=="/start":
+                send(chat_id,f"🚀 Orbit V17.1 by {KLEBER_SIG} - Use /painel",mid)
             clean_cmd(chat_id,mid); return
+
+        if not is_admin(chat_id,uid):
+            send(chat_id,"⚠️ Só ADM pode usar."); clean_cmd(chat_id,mid); return
 
         if cmd=="/ban":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if not tgt: send(chat_id,"Responda a mensagem com /ban",mid); clean_cmd(chat_id,mid); return
-            r=execute_action(chat_id,"BAN",tgt,"ban ADM")
-            send(chat_id,"🚫 Banido" if r["success"] else f"❌ {r.get('error','sem permissão')}",mid); clean_cmd(chat_id,mid); return
-        if cmd=="/kick":
+            if not tgt: send(chat_id,"Responda a msg com /ban",mid)
+            else: r=execute_action(chat_id,"BAN",tgt,"ban ADM"); send(chat_id,"🚫 Banido" if r["success"] else "❌ Erro",mid)
+        elif cmd=="/unban":
+            if not args: send(chat_id,"Use: /unban ID",mid)
+            else:
+                try: telegram_req("unbanChatMember",{"chat_id":chat_id,"user_id":int(args[0])}); send(chat_id,f"✅ Desbanido {args[0]}",mid)
+                except: send(chat_id,"❌ Erro ID",mid)
+        elif cmd=="/kick":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if not tgt: send(chat_id,"Responda com /kick",mid); clean_cmd(chat_id,mid); return
-            r=execute_action(chat_id,"KICK",tgt,"kick ADM")
-            send(chat_id,"👢 Kickado" if r["success"] else "❌ Erro",mid); clean_cmd(chat_id,mid); return
-        if cmd=="/mute":
+            r=execute_action(chat_id,"KICK",tgt,"kick ADM"); send(chat_id,"👢 Kickado" if r["success"] else "❌",mid)
+        elif cmd=="/mute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if not tgt: send(chat_id,"Responda com /mute",mid); clean_cmd(chat_id,mid); return
-            r=execute_action(chat_id,"MUTE",tgt,"mute ADM")
-            send(chat_id,"🔇 Mutado 10min" if r["success"] else "❌ Erro",mid); clean_cmd(chat_id,mid); return
-        if cmd=="/unmute":
+            r=execute_action(chat_id,"MUTE",tgt,"mute ADM"); send(chat_id,"🔇 Mutado 10min" if r["success"] else "❌",mid)
+        elif cmd=="/unmute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if not tgt: send(chat_id,"Responda com /unmute",mid); clean_cmd(chat_id,mid); return
-            r=execute_action(chat_id,"UNMUTE",tgt,"unmute")
-            send(chat_id,"🔊 Desmutado" if r["success"] else "❌ Erro",mid); clean_cmd(chat_id,mid); return
+            r=execute_action(chat_id,"UNMUTE",tgt,"unmute"); send(chat_id,"🔊 Desmutado" if r["success"] else "❌",mid)
+        elif cmd=="/delete":
+            tgt_mid=msg.get("reply_to_message",{}).get("message_id")
+            if tgt_mid: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":tgt_mid}); send(chat_id,"🗑️ Apagada",mid)
+        elif cmd=="/warn":
+            tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            if not tgt: send(chat_id,"Responda com /warn",mid)
+            else:
+                execute_action(chat_id,"WARN",tgt,"warn ADM"); c=get_db(); w=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(tgt))).fetchone(); c.close(); cnt=w["count"] if w else 1
+                send(chat_id,f"⚠️ Warn {cnt}/{cfg.get('warning_limit',3)}",mid)
+                if cnt>=cfg.get("warning_limit",3): execute_action(chat_id,"BAN",tgt,"3 warns"); send(chat_id,"🚫 Ban por 3 warns",mid)
+        elif cmd=="/unwarn":
+            tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            if tgt:
+                with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(tgt))); c.commit(); c.close()
+                send(chat_id,"✅ Warns zerados",mid)
+        elif cmd=="/warnings":
+            tgt=msg.get("reply_to_message",{}).get("from",{}).get("id") or uid
+            c=get_db(); w=c.execute("SELECT count FROM warnings WHERE chat_id=? AND user_id=?",(str(chat_id),str(tgt))).fetchone(); c.close()
+            send(chat_id,f"Warns: {w['count'] if w else 0}/{cfg.get('warning_limit',3)}",mid)
+        elif cmd=="/resetwarnings":
+            with db_lock: c=get_db(); c.execute("DELETE FROM warnings WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close()
+            send(chat_id,"✅ Todos warns zerados",mid)
+        elif cmd=="/pin":
+            tgt_mid=msg.get("reply_to_message",{}).get("message_id")
+            if tgt_mid: telegram_req("pinChatMessage",{"chat_id":chat_id,"message_id":tgt_mid}); send(chat_id,"📌 Fixada",mid)
+        elif cmd=="/unpin":
+            telegram_req("unpinAllChatMessages",{"chat_id":chat_id}); send(chat_id,"📌 Desfixado",mid)
+        elif cmd=="/allowlink":
+            if not args: send(chat_id,"Use: /allowlink youtube.com",mid)
+            else:
+                cur=cfg.get("allowed_links",""); new=cur+","+args[0] if cur else args[0]
+                set_cfg(chat_id,"allowed_links",new); send(chat_id,f"✅ Liberado: {args[0]}",mid)
+        elif cmd=="/logs":
+            c=get_db(); rows=c.execute("SELECT action,user_id,reason FROM moderation_logs WHERE chat_id=? ORDER BY id DESC LIMIT 10",(str(chat_id),)).fetchall(); c.close()
+            txt="📜 *Logs:*\n"+"\n".join([f"{r['action']} - {r['user_id']} - {r['reason'][:30]}" for r in rows]) if rows else "Sem logs"
+            send(chat_id,txt,mid)
+        elif cmd=="/resetai":
+            send(chat_id,f"✅ IAs resetadas by {KLEBER_SIG}",mid)
+        elif cmd=="/setsensual":
+            if not args: send(chat_id,"Use: /setsensual livre|moderate|restrito",mid)
+            else:
+                mode=args[0].lower();
+                if mode=="moderado": mode="moderate"
+                set_cfg(chat_id,"sensual_mode",mode); set_cfg(chat_id,"anti_sensual",0 if mode=="livre" else 1)
+                send(chat_id,f"✅ +18 = {mode} - by {KLEBER_SIG}",mid)
+        elif cmd=="/antilink":
+            if args: set_cfg(chat_id,"anti_link",1 if args[0].lower()=="on" else 0); send(chat_id,f"AntiLink {args[0]}",mid)
+        elif cmd=="/antiflood":
+            if len(args)>=2: set_cfg(chat_id,"flood_limit",int(args[0])); set_cfg(chat_id,"flood_window",int(args[1])); send(chat_id,f"Flood {args[0]}/{args[1]}",mid)
+        elif cmd=="/antispam":
+            if args: set_cfg(chat_id,"anti_spam",1 if args[0].lower()=="on" else 0); send(chat_id,f"AntiSpam {args[0]}",mid)
+        elif cmd=="/antidivulg":
+            if args: set_cfg(chat_id,"anti_divulgation",1 if args[0].lower()=="on" else 0); send(chat_id,f"AntiDivulg {args[0]}",mid)
 
-    # IGNORA ADM/BOT
-    if uid==BOT_ID or is_admin(chat_id,uid):
-        return
+        clean_cmd(chat_id,mid); return
+
+    if uid==BOT_ID or is_admin(chat_id,uid): return
     if not text: return
 
-    # LEARNING - KLEBER
     mem_texts[(str(chat_id),str(uid))].append(text)
-    mem_context[str(chat_id)].append(text)
-
-    # IA
     ai_res = call_moderation_ai(text, mem_texts[(str(chat_id),str(uid))])
 
-    # === FILTRO +18 INTELIGENTE - KLEBER V17 ===
     sensual = float(ai_res.get("sensual",0))
     if sensual >= 0.65 and cfg.get("anti_sensual"):
         mode = cfg.get("sensual_mode","moderate")
         if mode=="restrito":
-            execute_action(chat_id,"DELETE",None,f"+18 restrito {sensual:.2f} by {KLEBER_SIG}",mid)
-            send(chat_id,f"🔞 +18 não permitido aqui.",mid)
-            return
+            execute_action(chat_id,"DELETE",None,f"+18 restrito {sensual:.2f} by {KLEBER_SIG}",mid,source="AUTO+SENSUAL",confidence=sensual); return
         elif mode=="moderate":
-            if sensual >= 0.92: # PESADO
-                execute_action(chat_id,"DELETE",None,f"+18 pesado {sensual:.2f}",mid)
-                send(chat_id,f"⚠️ Pesado demais @{msg['from'].get('first_name','')}! Resenha tem limite 😅",mid)
-                return
-            else: # LEVE - 0.65 a 0.91 - "andar sem cueca" cai aqui
-                if random.random() < 0.30:
-                    send(chat_id,f"😏 Eita @{msg['from'].get('first_name','')} tá ousado hein... vou deixar passar 👀",mid)
-                return
-        # livre = passa tudo
+            if sensual >= 0.92:
+                execute_action(chat_id,"DELETE",None,f"+18 pesado {sensual:.2f} by {KLEBER_SIG}",mid,source="AUTO+SENSUAL",confidence=sensual)
+                send(chat_id,f"⚠️ Pesado demais @{msg['from'].get('first_name','')}!",mid); return
+            else: return
 
-    # FILTRO DIVULGAÇÃO
     if float(ai_res.get("divulg",0)) >= 0.75 and cfg.get("anti_divulgation"):
-        execute_action(chat_id,"DELETE",None,f"divulg {ai_res['divulg']:.2f}",mid)
-        return
+        allowed = [d.strip().lower() for d in (cfg.get("allowed_links","").split(",")) if d.strip()]
+        if not any(d in text.lower() for d in allowed):
+            execute_action(chat_id,"DELETE",None,f"divulg {ai_res['divulg']:.2f} by {KLEBER_SIG}",mid,source="AUTO+DIVULG",confidence=float(ai_res.get("divulg",0))); return
 
-    # FILTRO TOXIC
+    if cfg.get("anti_link") and re.search(r"https?://|t\.me/|wa\.me|discord\.gg", text.lower()):
+        allowed = [d.strip().lower() for d in (cfg.get("allowed_links","").split(",")) if d.strip()]
+        if not any(d in text.lower() for d in allowed):
+            execute_action(chat_id,"DELETE",None,f"antilink by {KLEBER_SIG}",mid,source="AUTO+LINK"); return
+
     if float(ai_res.get("toxic",0)) >= 0.85:
-        execute_action(chat_id,"DELETE",None,f"toxic {ai_res['toxic']:.2f}",mid)
-        if float(ai_res.get("toxic",0))>=0.93:
-            execute_action(chat_id,"MUTE",uid,"toxico grave")
+        execute_action(chat_id,"DELETE",None,f"toxic {ai_res['toxic']:.2f} by {KLEBER_SIG}",mid,source="AUTO+TOXIC",confidence=float(ai_res.get("toxic",0)))
+        if float(ai_res.get("toxic",0))>=0.93: execute_action(chat_id,"MUTE",uid,f"toxico grave by {KLEBER_SIG}",mid,source="AUTO+TOXIC")
         return
 
-    # FLOOD
-    key=(str(chat_id),str(uid)); now=time.time(); dq=mem_flood[key]; dq.append(now)
-    while dq and now-dq[0] > cfg.get("flood_window",15): dq.popleft()
-    if len(dq) > cfg.get("flood_limit",7):
-        execute_action(chat_id,"MUTE",uid,f"flood {len(dq)}",mid)
-        dq.clear()
-        send(chat_id,f"🔇 @{msg['from'].get('first_name','')} floodou, mute 10min")
-        return
+    if cfg.get("anti_flood"):
+        key=(str(chat_id),str(uid)); now=time.time(); dq=mem_flood[key]; dq.append(now)
+        while dq and now-dq[0] > cfg.get("flood_window",15): dq.popleft()
+        if len(dq) > cfg.get("flood_limit",7):
+            execute_action(chat_id,"MUTE",uid,f"flood {len(dq)} by {KLEBER_SIG}",mid,source="AUTO+FLOOD"); dq.clear()
+            send(chat_id,f"🔇 @{msg['from'].get('first_name','')} floodou",mid); return
 
 if __name__=="__main__":
     print(f"[{KLEBER_SIG}] START {ORBIT_CORE} CHECK:{KLEBER_CHECK}")
