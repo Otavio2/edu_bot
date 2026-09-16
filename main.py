@@ -1,7 +1,7 @@
-# ORBIT ALLIANCE V17.6 UNIVERSAL - IA ENTENDEDORA DE TUDO
+# ORBIT ALLIANCE V17.7 UNIVERSAL - IA ENTENDEDORA DE TUDO - 100% FIX
 # FILOSOFIA: HUMANO MANDA, BOT OBEDECE, IA ENTENDE QUALQUER REGRA
 # CREATED BY: Kʆɛɓɛʀ | HANSEL CORE
-# SIG: 4b2e-7a9f-KLEBER-ORBIT-V17.6 | CHECK: KLEBER-2026-ULTIMATE
+# SIG: 4b2e-7a9f-KLEBER-ORBIT-V17.7 | CHECK: KLEBER-2026-ULTIMATE-FIX
 import os, re, json, time, sqlite3, logging, requests, base64, hashlib, threading
 from datetime import datetime, timezone
 from collections import defaultdict, deque, Counter
@@ -21,7 +21,7 @@ TIMEZONE = "America/Fortaleza"
 TZ = pytz.timezone(TIMEZONE)
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit Alliance V17.6 by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit Alliance V17.7 by {KLEBER_SIG}"
 KLEBER_CHECK = hashlib.sha256(KLEBER_SIG.encode()).hexdigest()[:12]
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
@@ -90,12 +90,9 @@ def ai_sensual_score(text):
     tl = normalize_text(text)
     score = 0
     for w in SENSUAL_WORDS:
-        if w in tl:
-            score += 0.45
-    if "andar sem cueca" in tl:
-        score = 0.85
-    if "pelado" in tl and "casa" in tl:
-        score = 0.85
+        if w in tl: score += 0.45
+    if "andar sem cueca" in tl: score = 0.85
+    if "pelado" in tl and "casa" in tl: score = 0.85
     return min(score, 1.0)
 
 def ai_toxic_score(text):
@@ -105,24 +102,38 @@ def ai_toxic_score(text):
 def ai_divulgacao_score(text):
     tl = text.lower()
     sc = 0
-    if re.search(r"https?://|t\.me/|wa\.me|discord\.gg", tl):
-        sc += 0.4
+    if re.search(r"https?://|t\.me/|wa\.me|discord\.gg", tl): sc += 0.4
     for w in DIVULGA_WORDS:
-        if w in tl:
-            sc += 0.15
+        if w in tl: sc += 0.15
     return min(sc, 1.0)
-    
 def ai_spam_score(texts):
     if len(texts)<3: return 0
     last=normalize_text(texts[-1]) if texts else ""
     count=sum(1 for t in texts if normalize_text(t)==last)
     return 0.9 if count>=3 else 0
 
-def call_moderation_ai(text, recent_texts=[]):
+def call_moderation_ai(text, recent_texts=[], chat_id=None):
     norm = normalize_text(text)
     hs = ai_sensual_score(text); ht = ai_toxic_score(text); hd = ai_divulgacao_score(text); hsp = ai_spam_score(list(recent_texts))
-    if not PROVIDERS: return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp}
-    prompt = f"""Você é moderador BR. Retorne SOMENTE JSON {{"toxic":0-1,"divulg":0-1,"sensual":0-1,"spam":0-1}}. Msg:"{norm[:300]}" JSON:"""
+    # PEGA REGRAS DO GRUPO PARA IA ENTENDER CUSTOM
+    rules_ctx = ""
+    if chat_id:
+        try:
+            cfg_tmp = get_cfg(chat_id)
+            rules_ctx = cfg_tmp.get("rules_msg","")[:600]
+        except: rules_ctx = ""
+
+    if not PROVIDERS:
+        return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp,"rule_violation":0}
+
+    prompt = f"""Você é moderador BR do ORBIT.
+REGRAS DO GRUPO: {rules_ctx}
+Analise a mensagem e veja se viola as REGRAS CUSTOM também.
+Retorne SOMENTE JSON {{"toxic":0-1,"divulg":0-1,"sensual":0-1,"spam":0-1,"rule_violation":0-1}}.
+Ex: se regra tem 'sem audio' e msg é audio ou fala de audio = rule_violation 0.9
+Ex: se regra tem 'sem politica' e msg fala de politica = rule_violation 0.9
+Msg:"{norm[:300]}" JSON:"""
+
     for prov in ORDER_PREFERENCE:
         if prov not in PROVIDERS: continue
         cfg=PROVIDERS[prov]
@@ -136,20 +147,22 @@ def call_moderation_ai(text, recent_texts=[]):
                     if m:
                         j=json.loads(m.group())
                         j["sensual"]=max(float(j.get("sensual",0)),hs); j["toxic"]=max(float(j.get("toxic",0)),ht); j["divulg"]=max(float(j.get("divulg",0)),hd); j["spam"]=max(float(j.get("spam",0)),hsp)
+                        j.setdefault("rule_violation",0)
                         return j
             else:
                 for modelo in FALLBACK_MODELS.get(prov,[]):
                     url=f"{cfg['endpoint'].rstrip('/')}/chat/completions"
-                    r=sess.post(url, json={"model":modelo,"messages":[{"role":"user","content":prompt}],"temperature":0.1,"max_tokens":100}, headers={"Authorization":f"Bearer {cfg['key']}"}, timeout=5)
+                    r=sess.post(url, json={"model":modelo,"messages":[{"role":"user","content":prompt}],"temperature":0.1,"max_tokens":120}, headers={"Authorization":f"Bearer {cfg['key']}"}, timeout=5)
                     if r.status_code==200:
                         cont=r.json()["choices"][0]["message"]["content"]
                         m=re.search(r"\{.*\}",cont,re.DOTALL)
                         if m:
                             j=json.loads(m.group())
                             j["sensual"]=max(float(j.get("sensual",0)),hs); j["toxic"]=max(float(j.get("toxic",0)),ht); j["divulg"]=max(float(j.get("divulg",0)),hd); j["spam"]=max(float(j.get("spam",0)),hsp)
+                            j.setdefault("rule_violation",0)
                             return j
         except: continue
-    return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp}
+    return {"toxic":ht,"divulg":hd,"sensual":hs,"spam":hsp,"rule_violation":0}
 
 def get_db():
     c=sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
@@ -275,7 +288,7 @@ def learn_toxic_words_from_fight(chat_id, texts):
             c.commit(); c.close()
     except: pass
 
-# ============ V17.6 - IA UNIVERSAL ============
+# ============ V17.7 - IA UNIVERSAL 100% ============
 RULES_INTERPRET = {
     "anti_link": ["sem link", "sem links", "proibido link", "proibido divulgar grupo"],
     "anti_divulgation": ["sem divulgacao", "sem spam", "proibido divulgar", "sem venda", "sem propaganda"],
@@ -296,8 +309,7 @@ def interpret_rules_and_auto_config(chat_id, rules_text):
 def extract_rule_intent(text):
     tl = normalize_text(text)
     triggers = ["proibido", "proibida", "sem ", "não pode", "nao pode", "para de mandar", "tão colocando", "tao colocando", "tão mandando", "tao mandando", "chega de", "povo tá", "galera tá", "ninguem pode", "ninguém pode", "vou proibir", "ta proibido"]
-    if not any(t in tl for t in triggers):
-        return None
+    if not any(t in tl for t in triggers): return None
     if "link" in tl or ("divulg" in tl and "grupo" in tl):
         return {"key": "anti_link", "text": "🚫 Sem Links: Proibido divulgar links de outros grupos, canais ou vendas sem autorização.", "search": "link divulg grupo"}
     if "flood" in tl or ("figurinha" in tl and ("spam" in tl or "muita" in tl)) or "lotando" in tl:
@@ -306,10 +318,8 @@ def extract_rule_intent(text):
         return {"key": "anti_sensual", "text": "🛑 Conteúdo Limpo: Zero pornografia, nudes ou conteúdo +18.", "search": "porn putaria nude +18 pelad"}
     if "tigrinho" in tl or "cassino" in tl or "aposta" in tl or "vendendo" in tl or "venda" in tl:
         return {"key": "anti_divulgation", "text": "🚫 Sem Divulgação: Proibido vender, divulgar cassino/tigrinho ou fazer propaganda.", "search": "divulgacao venda cassino tigrinho aposta"}
-    # REGRA GENÉRICA - QUALQUER COISA
     clean = re.sub(r"(?i)tão colocando|tao colocando|tão mandando|tao mandando|chega de|galera tá|povo tá|para de|proibido|sem", "", text, flags=re.IGNORECASE).strip()
     if len(clean) < 3: clean = text.strip()
-    # Evita frases muito longas
     if len(clean) > 80: clean = clean[:80]
     return {"key": "custom", "text": f"🚫 {clean.capitalize()}", "search": normalize_text(clean)}
 
@@ -350,7 +360,7 @@ def webhook():
     if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET: abort(403)
     data=request.get_json(force=True); executor.submit(process_update, data); return {"ok":True},200
 @app.route("/", methods=["GET"])
-def health(): return {"status":f"Orbit V17.6 by {KLEBER_SIG}","pending":len(pending_rules)}
+def health(): return {"status":f"Orbit V17.7 by {KLEBER_SIG}","pending":len(pending_rules)}
 
 def process_update(update):
     msg = update.get("message") or update.get("edited_message")
@@ -379,7 +389,7 @@ def process_update(update):
         return
 
     if msg["chat"]["type"]=="private":
-        if text.startswith("/"): send(chat_id,f"🚀 Orbit V17.6 by {KLEBER_SIG}"); clean_cmd(chat_id,mid)
+        if text.startswith("/"): send(chat_id,f"🚀 Orbit V17.7 by {KLEBER_SIG}"); clean_cmd(chat_id,mid)
         return
 
     if text.startswith("/"):
@@ -392,11 +402,11 @@ def process_update(update):
                 send(chat_id, f"📜 *REGRAS ATUAIS:*\n{numbered}", mid)
                 clean_cmd(chat_id,mid); return
             if cmd in ["/painel","/help"]:
-                txt=f"""⚙️ *PAINEL ORBIT V17.6 UNIVERSAL - By {KLEBER_SIG}*
+                txt=f"""⚙️ *PAINEL ORBIT V17.7 UNIVERSAL - By {KLEBER_SIG}*
 *HUMANO MANDA, BOT OBEDECE* 🫡
-*IA ENTENDEDORA: ON*
+*IA ENTENDEDORA: ON - 100%*
 
-*Sistema:* Link:{cfg.get('anti_link')} Divulg:{cfg.get('anti_divulgation')} Flood:{cfg.get('anti_flood')} +18:{cfg.get('sensual_mode')}
+*Sistema:* Link:{cfg.get('anti_link')} Divulg:{cfg.get('anti_divulgation')} Flood:{cfg.get('anti_flood')} +18:{cfg.get('sensual_mode')} Night:{cfg.get('night_mode')}
 
 *— REGRAS (ADM HUMANO) —*
 `/setrules TEXTO` - Define todas
@@ -406,12 +416,12 @@ def process_update(update):
 
 *— UNIVERSAL —*
 Fale qualquer regra: "proibido política", "chega de audio", "sem figurinha"
-Se não tiver, eu pergunto SIM/NÃO e cumpro.
+Se não tiver, eu pergunto SIM/NÃO e cumpro. IA agora apaga custom também!
 
 _Core by {KLEBER_SIG} ✅_
 """
                 send(chat_id,txt,mid)
-            elif cmd=="/status": send(chat_id,f"🤖 V17.6 UNIVERSAL By {KLEBER_SIG}",mid)
+            elif cmd=="/status": send(chat_id,f"🤖 V17.7 UNIVERSAL By {KLEBER_SIG} - IA CUSTOM ON",mid)
             clean_cmd(chat_id,mid); return
 
         if not is_admin(chat_id,uid):
@@ -489,9 +499,7 @@ _Core by {KLEBER_SIG} ✅_
                 set_cfg(chat_id,"rules_msg",updated)
                 changes = interpret_rules_and_auto_config(chat_id, new_rule)
                 txt_c = f"\nAtivei: {', '.join(changes)}" if changes else ""
-                send(chat_id,f"✅ Regra adicionada manualmente!\n\n`{new_rule}`{txt_c}\n\nUse /regras pra ver tudo",mid)
-            else:
-                send(chat_id,"Uso: `/addrule 🚫 Nova regra aqui`",mid)
+                send(chat_id,f"✅ Regra adicionada!\n\n`{new_rule}`{txt_c}\n\nUse /regras pra ver tudo",mid)
         elif cmd=="/removerule":
             if args and args[0].isdigit():
                 idx = int(args[0]) - 1
@@ -500,10 +508,7 @@ _Core by {KLEBER_SIG} ✅_
                     removida = rules.pop(idx)
                     set_cfg(chat_id,"rules_msg","\n".join(rules))
                     send(chat_id,f"🗑️ Regra removida: {removida}",mid)
-                else:
-                    send(chat_id,"❌ Número inválido. Use /regras",mid)
-            else:
-                send(chat_id,"Uso: `/removerule 3`",mid)
+                else: send(chat_id,"❌ Número inválido. Use /regras",mid)
         elif cmd=="/setnight":
             if args and args[0].lower() in ["on","off"]:
                 set_cfg(chat_id,"night_mode",1 if args[0].lower()=="on" else 0); send(chat_id,f"✅ Night mode {args[0]}",mid)
@@ -512,7 +517,7 @@ _Core by {KLEBER_SIG} ✅_
                 set_cfg(chat_id,"mention_limit",int(args[0])); send(chat_id,f"✅ Limite menção = {args[0]}",mid)
         clean_cmd(chat_id,mid); return
 
-    # ============ V17.6 - CÉREBRO UNIVERSAL ============
+    # ============ V17.7 - CÉREBRO UNIVERSAL 100% ============
     if is_admin(chat_id, uid) and str(chat_id) in pending_rules:
         tl = normalize_text(text)
         if tl in ["sim", "s", "yes", "adiciona", "pode adicionar", "adicionar", "confirma", "pode sim"]:
@@ -524,9 +529,8 @@ _Core by {KLEBER_SIG} ✅_
             elif pend["key"] == "anti_flood": set_cfg(chat_id, "anti_flood", 1)
             elif pend["key"] == "anti_sensual": set_cfg(chat_id, "anti_sensual", 1); set_cfg(chat_id, "sensual_mode", "restrito")
             elif pend["key"] == "anti_divulgation": set_cfg(chat_id, "anti_divulgation", 1)
-            elif pend["key"] == "custom":
-                interpret_rules_and_auto_config(chat_id, pend['text_proposed'])
-            send(chat_id, f"✅ *Fechado, chefe!*\n\nAdicionei:\n{pend['text_proposed']}\n\nJá atualizei o /painel e a partir de agora vou cumprir automaticamente. 🫡")
+            elif pend["key"] == "custom": interpret_rules_and_auto_config(chat_id, pend['text_proposed'])
+            send(chat_id, f"✅ *Fechado, chefe!*\n\nAdicionei:\n{pend['text_proposed']}\n\nJá atualizei e a partir de agora vou cumprir automaticamente, inclusive regras CUSTOM. 🫡")
             return
         if tl in ["nao", "não", "n", "no", "deixa", "cancela", "nao precisa"]:
             pending_rules.pop(str(chat_id))
@@ -538,7 +542,7 @@ _Core by {KLEBER_SIG} ✅_
         if intent_rule:
             if not rule_exists_in_group(cfg.get("rules_msg",""), intent_rule["search"]):
                 pending_rules[str(chat_id)] = intent_rule
-                send(chat_id, f"🫡 *Entendido, chefe!*\n\nVocê falou: `{text}`\n\nMas essa regra NÃO está nas regras do grupo.\n\nQuer que eu adicione?\n\n`{intent_rule['text']}`\n\nResponda *SIM* ou *NÃO*\n\n_Se SIM, já vou começar a cumprir._")
+                send(chat_id, f"🫡 *Entendido, chefe!*\n\nVocê falou: `{text}`\n\nMas essa regra NÃO está nas regras do grupo.\n\nQuer que eu adicione?\n\n`{intent_rule['text']}`\n\nResponda *SIM* ou *NÃO*\n\n_Se SIM, já vou começar a cumprir inclusive CUSTOM._")
                 return
 
     if msg.get("reply_to_message") and is_admin(chat_id,uid):
@@ -553,7 +557,7 @@ _Core by {KLEBER_SIG} ✅_
         return
 
     if uid==BOT_ID or is_admin(chat_id,uid): return
-    if not text: return
+    if not text and not msg.get("voice") and not msg.get("audio") and not msg.get("sticker"): return
 
     if cfg.get("night_mode"):
         hour_now = datetime.now(TZ).hour
@@ -573,7 +577,12 @@ _Core by {KLEBER_SIG} ✅_
             execute_action(chat_id,"MUTE",uid,f"raid {mentions}",mid,source="AUTO+MENTION"); send(chat_id,f"🚨 Raid: {mentions} marcações",mid); return
 
     mem_texts[(str(chat_id),str(uid))].append(text)
-    ai_res = call_moderation_ai(text, mem_texts[(str(chat_id),str(uid))])
+    ai_res = call_moderation_ai(text, mem_texts[(str(chat_id),str(uid))], chat_id=chat_id)
+
+    if float(ai_res.get("rule_violation",0)) >= 0.75:
+        execute_action(chat_id,"DELETE",uid,f"violou regra custom {ai_res['rule_violation']:.2f}",mid,source="AUTO+CUSTOM")
+        send(chat_id,f"🚫 @{msg['from'].get('first_name','')} violou as regras do grupo!",mid)
+        return
 
     sensual = float(ai_res.get("sensual",0))
     if sensual >= 0.65 and cfg.get("anti_sensual"):
