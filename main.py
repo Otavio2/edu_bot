@@ -79,8 +79,20 @@ SENSUAL_WORDS = {"sem cueca","sem calcinha","pelado","pelada","tesao","tesão","
 TOXIC_WORDS = {"lixo","burro","otario","otário","idiota","fdp","vsf","arrombado","desgraca","corno","vagabundo","vai se foder","fdp"," lixo"}
 DIVULGA_WORDS = {"entra","ganhe","lucro","renda","grátis","gratis","promoção","promocao","vagas","dinheiro","pix","aposte","cassino","tigrinho","sorteio","grupo novo"}
 
+DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
+# Corrige se usar /data sem Disk
+if "/data" in DATABASE_PATH:
+    try:
+        os.makedirs("/data", exist_ok=True)
+    except:
+        DATABASE_PATH = "Orbit.db"
+
 def get_db():
-    c = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=15)
+    try:
+        c = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=15)
+    except sqlite3.OperationalError:
+        # fallback local
+        c = sqlite3.connect("Orbit.db", check_same_thread=False, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL;")
     c.execute("PRAGMA synchronous=NORMAL;")
