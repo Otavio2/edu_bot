@@ -274,13 +274,16 @@ def call_moderation_ai(text):
     hd = min((0.4 if re.search(r"https?://|t\.me/|wa\.me|discord\.gg", tl) else 0) + sum(0.15 for w in DIVULGA_WORDS if w in tl), 1.0)
     if not PROVIDERS:
         return {"toxic": ht, "divulg": hd, "sensual": hs}
+
     prompt = f'Retorne SOMENTE JSON {{"toxic":0-1,"divulg":0-1,"sensual":0-1}}. Msg:"{text[:200]}"'
+
     for prov in ORDER_PREFERENCE:
         if prov not in PROVIDERS:
             continue
         cfg = PROVIDERS[prov]
         try:
             sess = get_session()
+            # CLOUDFLARE
             if cfg["format"] == "cloudflare":
                 r = sess.post(cfg["endpoint"], json={"messages": [{"role": "user", "content": prompt}]}, headers={"Authorization": f"Bearer {cfg['key']}"}, timeout=6)
                 if r.status_code == 200:
@@ -289,7 +292,35 @@ def call_moderation_ai(text):
                     if m:
                         j = json.loads(m.group())
                         return {"toxic": max(float(j.get("toxic", 0)), ht), "divulg": max(float(j.get("divulg", 0)), hd), "sensual": max(float(j.get("sensual", 0)), hs)}
-        except:
+            # GROQ / CEREBRAS / OPENAI FORMAT
+            elif cfg["format"] == "openai":
+                model = FALLBACK_MODELS.get(prov, ["llama-3.1-8b-instant"])[0]
+                headers = {"Authorization": f"Bearer {cfg['key']}", "Content-Type": "application/json"}
+                url = f"{cfg['endpoint']}/chat/completions" if "openai" not in cfg["endpoint"] and "groq" in cfg["endpoint"] or "cerebras" in cfg["endpoint"] else cfg["endpoint"]
+                if "groq.com" in cfg["endpoint"]:
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                elif "cerebras" in cfg["endpoint"]:
+                    url = "https://api.cerebras.ai/v1/chat/completions"
+                r = sess.post(url, json={"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 100}, headers=headers, timeout=6)
+                if r.status_code == 200:
+                    resp = r.json()["choices"][0]["message"]["content"]
+                    m = re.search(r"\{.*\}", resp, re.DOTALL)
+                    if m:
+                        j = json.loads(m.group())
+                        return {"toxic": max(float(j.get("toxic", 0)), ht), "divulg": max(float(j.get("divulg", 0)), hd), "sensual": max(float(j.get("sensual", 0)), hs)}
+            # GEMINI
+            elif cfg["format"] == "gemini":
+                model = FALLBACK_MODELS.get(prov, ["gemini-1.5-flash"])[0]
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={cfg['key']}"
+                r = sess.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, headers={"Content-Type": "application/json"}, timeout=6)
+                if r.status_code == 200:
+                    resp = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    m = re.search(r"\{.*\}", resp, re.DOTALL)
+                    if m:
+                        j = json.loads(m.group())
+                        return {"toxic": max(float(j.get("toxic", 0)), ht), "divulg": max(float(j.get("divulg", 0)), hd), "sensual": max(float(j.get("sensual", 0)), hs)}
+        except Exception as e:
+            print(f"[{KLEBER_SIG}] IA {prov} falhou: {e}")
             continue
     return {"toxic": ht, "divulg": hd, "sensual": hs}
 
