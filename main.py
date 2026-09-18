@@ -357,7 +357,6 @@ def webhook():
 def health():
     return {"status":ORBIT_CORE,"bot":BOT_USERNAME}
 
-# ===== FUNÇÃO PV - LISTA GRUPOS DO ADM =====
 def get_admin_groups_for_user(user_id):
     c=get_db()
     all_groups=c.execute("SELECT chat_id,title FROM group_rules ORDER BY rowid DESC LIMIT 50").fetchall()
@@ -380,8 +379,6 @@ def handle_private(msg):
     uid=msg["from"]["id"]
     text=(msg.get("text","") or "").strip()
     low=text.lower()
-
-    # 1. COMANDOS COM ID: /regras_-100xxx /painel_-100xxx etc
     m=re.match(r"/(\w+)_(-?\d+)(?:\s+(.*))?", text)
     if m:
         cmd=m.group(1).lower()
@@ -408,7 +405,6 @@ def handle_private(msg):
                     c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(target_chat,rid))
                     c.commit()
                     c.close()
-                global backup_pending
                 backup_pending=True
                 send(chat_id,f"✅ Regra {rid} apagada de {target_chat}")
             except: send(chat_id,"Use: /delregra_-100123 2")
@@ -440,8 +436,6 @@ def handle_private(msg):
             c.close()
             send(chat_id,f"⚙️ *Painel {target_chat}*\nRegras: {rc}/20\nLock: {'ON' if cfg.get('lock_group') else 'OFF'}\nSensual: {cfg.get('sensual_mode')}")
             return
-
-    # 2. START / PAINEL / GRUPOS
     if low in ["/start","/meusgrupos","/grupos","/painel"]:
         sent = send(chat_id,"🔍 Buscando seus grupos onde sou ADM... aguarde")
         groups=get_admin_groups_for_user(uid)
@@ -449,7 +443,6 @@ def handle_private(msg):
             mid = sent.get("result",{}).get("message_id")
             if mid: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
         except: pass
-
         if not groups:
             send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
             return
@@ -460,8 +453,6 @@ def handle_private(msg):
         txt+="Cole regras aqui e eu pergunto onde salvar."
         send(chat_id,txt)
         return
-
-    # 3. DETECTA REGRAS COLADAS NO PV
     if len(text)>=5 and not text.startswith("/"):
         rules=parse_rules_from_text(text)
         if rules:
@@ -479,7 +470,6 @@ def handle_private(msg):
                 c.close()
             send(chat_id,txt)
             return
-
     if low.startswith("/salvar_"):
         try:
             target_chat=low.split("_")[1]
@@ -498,13 +488,11 @@ def handle_private(msg):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid)))
                 c.commit()
                 c.close()
-            global backup_pending
             backup_pending=True
             send(chat_id,f"✅ {len(rules)} salva(s) em {target_chat}!")
         except Exception as e:
             send(chat_id,f"Erro {e}")
         return
-
     if low in ("sim","s","yes"):
         c=get_db()
         pend=c.execute("SELECT rules_json FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid))).fetchone()
@@ -529,12 +517,15 @@ def process_update(update):
     global backup_pending
     msg=update.get("message") or update.get("edited_message")
     if not msg: return
+    chat_type=msg["chat"].get("type","group")
+    if chat_type=="private":
+        handle_private(msg)
+        return
     chat_id=msg["chat"]["id"]
     uid=msg["from"]["id"]
     text=(msg.get("text","") or msg.get("caption","")).strip()
     mid=msg["message_id"]
     cfg=get_cfg(chat_id)
-
     if "new_chat_members" in msg:
         now=time.time()
         dq=mem_join[str(chat_id)]
@@ -565,7 +556,6 @@ def process_update(update):
                 c.execute("DELETE FROM user_rule_hits WHERE chat_id=? AND user_id=?",(str(chat_id),left_id))
                 c.commit()
                 c.close()
-            global backup_pending
             backup_pending=True
         except: pass
         if cfg.get("goodbye"):
@@ -575,7 +565,6 @@ def process_update(update):
             except: pass
             send(chat_id,txt)
         return
-
     if text.startswith("/"):
         parts=text.strip().split()
         cmd=parts[0].lower().split("@")[0]
@@ -655,7 +644,6 @@ def process_update(update):
         try: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
         except: pass
         return
-
     if is_admin(chat_id,uid):
         c=get_db()
         pend=c.execute("SELECT rules_json,created_at FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
@@ -706,7 +694,6 @@ def process_update(update):
                 else: send(chat_id,f"🤖 Detectei {len(rules)}:\n" + "\n".join([f"{i+1}. {r}" for i,r in enumerate(rules)]) + "\nSalvar? SIM/NAO",mid)
                 return
         return
-
     if uid==BOT_ID: return
     if cfg.get("lock_group"):
         execute_action(chat_id,"DELETE",None,mid,"lock")
