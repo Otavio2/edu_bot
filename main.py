@@ -385,13 +385,24 @@ def health():
 
 def get_admin_groups_for_user(user_id):
     c=get_db()
-    all_groups=c.execute("SELECT chat_id,title FROM group_rules WHERE chat_id LIKE '-100%' ORDER BY rowid DESC LIMIT 20").fetchall()
+    all_groups=c.execute("SELECT chat_id,title FROM group_rules WHERE chat_id LIKE '-100%' ORDER BY rowid DESC LIMIT 30").fetchall()
     c.close()
     admin_groups=[]
     def check_one(g):
         try:
-            if is_admin(g["chat_id"], user_id):
-                return {"chat_id":g["chat_id"],"title":g["title"] or g["chat_id"]}
+            cid = str(g["chat_id"])
+            t = g["title"]
+            # se titulo for None ou igual ao ID, busca na API
+            if not t or t == "None" or t == cid or t.startswith("-100"):
+                try:
+                    info = telegram_req("getChat", {"chat_id": cid})
+                    if info.get("ok"):
+                        t = info["result"].get("title") or "Grupo"
+                        set_cfg(cid, "title", t)
+                except:
+                    t = "Grupo"
+            if is_admin(cid, user_id):
+                return {"chat_id": cid, "title": t or "Grupo"}
         except: return None
     with ThreadPoolExecutor(max_workers=5) as ex:
         results=list(ex.map(check_one, all_groups))
@@ -507,10 +518,12 @@ def handle_private(msg):
                 if not groups:
                     send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
                     return
-                send(chat_id,f"🤖 *Seus grupos ({len(groups)})* - toque nos botões:")
+                    send(chat_id,f"🤖 *Seus grupos ({len(groups)})* - toque nos botões:")
                 for g in groups:
                     cid=g["chat_id"]
-                    title=g["title"] or "Grupo"
+                    title=(g["title"] or "Grupo").strip()
+                    if title.startswith("-100") or title.lower()=="none":
+                        title="Grupo"
                     markup={"inline_keyboard":[
                         [{"text":f"📌 {title[:30]}","callback_data":f"painel|{cid}"}],
                         [{"text":"📜 Ver Regras","callback_data":f"regras|{cid}"},{"text":"⚙️ Painel","callback_data":f"painel|{cid}"}],
