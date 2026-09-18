@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.5 PV FINAL FIX - BY Kʆɛɓɛʀ - RENDER READY
+# ORBIT ALLIANCE V17.6 PV ASYNC FIX - BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -15,7 +15,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit V17.5 PV by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit V17.6 PV by {KLEBER_SIG}"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
 JB_HEADERS = {"X-Master-Key": JSONBIN_KEY, "Content-Type":"application/json"} if JSONBIN_KEY else {}
@@ -30,7 +30,7 @@ mem_flood = defaultdict(lambda: deque(maxlen=15))
 mem_texts = defaultdict(lambda: deque(maxlen=5))
 mem_fight = defaultdict(lambda: deque(maxlen=20))
 mem_join = defaultdict(lambda: deque(maxlen=10))
-admin_cache = {} # chat_id_uid -> (bool, timestamp)
+admin_cache = {}
 backup_pending = False
 last_backup = 0
 BOT_ID = None
@@ -172,7 +172,6 @@ def is_admin(chat_id,uid):
         val, ts = admin_cache[key]
         if now - ts < 300:
             return val
-    # CREATOR_ID é dono do bot, mas só vale se grupo existe no DB
     if str(uid)==CREATOR_ID:
         try:
             c=get_db()
@@ -182,8 +181,6 @@ def is_admin(chat_id,uid):
                 admin_cache[key]=(True, now)
                 return True
         except: pass
-
-    # timeout curto para não travar PV
     try:
         url=f"{TELEGRAM_API_URL}/getChatMember"
         r=requests.post(url, json={"chat_id":chat_id,"user_id":uid}, timeout=4)
@@ -216,7 +213,6 @@ def wipe_group_data(chat_id):
     except: pass
 
 def parse_rules_from_text(text):
-    # FIX V17.5: Só aceita se tiver palavra de proibição, não qualquer frase curta
     lines=[l.strip() for l in text.splitlines() if len(l.strip())>=5]
     if not lines and len(text.strip())>=8: lines=[text.strip()]
     rules=[]
@@ -463,21 +459,22 @@ def handle_private(msg):
             send(chat_id,f"⚙️ *Painel {target_chat}*\nRegras: {rc}/20\nLock: {'ON' if cfg.get('lock_group') else 'OFF'}\nSensual: {cfg.get('sensual_mode')}")
             return
     if low in ["/start","/meusgrupos","/grupos","/painel"]:
-        sent = send(chat_id,"🔍 Buscando seus grupos onde sou ADM... aguarde")
-        groups=get_admin_groups_for_user(uid)
-        try:
-            mid = sent.get("result",{}).get("message_id")
-            if mid: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
-        except: pass
-        if not groups:
-            send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
-            return
-        txt=f"🤖 *Seus grupos ({len(groups)})*\n\n"
-        for g in groups:
-            cid=g["chat_id"]
-            txt+=f"📌 *{g['title']}*\n`{cid}`\n`/regras_{cid}` - ver regras\n`/painel_{cid}`\n\n"
-        txt+="Cole regras aqui e eu pergunto onde salvar."
-        send(chat_id,txt)
+        send(chat_id,"🔍 Buscando... já te respondo em 2s")
+        def do_search():
+            try:
+                groups=get_admin_groups_for_user(uid)
+                if not groups:
+                    send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
+                    return
+                txt=f"🤖 *Seus grupos ({len(groups)})*\n\n"
+                for g in groups:
+                    cid=g["chat_id"]
+                    txt+=f"📌 *{g['title']}*\n`{cid}`\n`/regras_{cid}` - ver regras\n`/painel_{cid}`\n\n"
+                txt+="Cole regras aqui e eu pergunto onde salvar."
+                send(chat_id,txt)
+            except Exception as e:
+                send(chat_id,f"Erro no /start: {e}")
+        threading.Thread(target=do_search, daemon=True).start()
         return
     if len(text)>=5 and not text.startswith("/"):
         rules=parse_rules_from_text(text)
@@ -552,6 +549,11 @@ def process_update(update):
     text=(msg.get("text","") or msg.get("caption","")).strip()
     mid=msg["message_id"]
     cfg=get_cfg(chat_id)
+    try:
+        title = msg["chat"].get("title")
+        if title and title!= cfg.get("title"):
+            set_cfg(chat_id, "title", title)
+    except: pass
     if "new_chat_members" in msg:
         now=time.time()
         dq=mem_join[str(chat_id)]
@@ -611,7 +613,7 @@ def process_update(update):
             cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
             c.close()
             if cmd in ["/painel","/help"]:
-                send(chat_id,f"⚙️ *PAINEL V17.5 PV By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock /logs",mid)
+                send(chat_id,f"⚙️ *PAINEL V17.6 PV By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock /logs",mid)
             else: send(chat_id,f"🤖 {ORBIT_CORE}",mid)
             return
         if not is_admin(chat_id,uid):
