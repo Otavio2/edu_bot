@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.7 COMPLETO BOTOES - BASE V17.6 - BY Kʆɛɓɛʀ
+# ORBIT ALLIANCE V17.8 FALANTE - BASE V17.7 BOTOES - BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -15,7 +15,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit V17.7 BOTOES by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit V17.8 FALANTE by {KLEBER_SIG}"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
 JB_HEADERS = {"X-Master-Key": JSONBIN_KEY, "Content-Type":"application/json"} if JSONBIN_KEY else {}
@@ -247,7 +247,7 @@ def check_custom_rules(text,chat_id):
                 return dict(r)
     return None
 
-def handle_custom_violation(chat_id,user_id,rule,message_id):
+def handle_custom_violation(chat_id,user_id,rule,message_id, user_name=""):
     rule_id=rule["id"]
     with db_lock:
         c=get_db()
@@ -259,7 +259,9 @@ def handle_custom_violation(chat_id,user_id,rule,message_id):
     global backup_pending
     backup_pending=True
     telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":message_id})
-    if cnt==1: send(chat_id,f"⚠️ *Regra:* {rule['rule_text']}\n1ª vez só aviso",message_id)
+    if cnt==1:
+        aviso = gerar_aviso_ia(user_name or "amigo", f'regra: {rule["rule_text"]}', rule["rule_text"])
+        send(chat_id, aviso, message_id)
     elif cnt==2:
         execute_action(chat_id,"WARN",user_id,None,f"regra: {rule['rule_text']}")
         send(chat_id,f"⚠️ WARN 1/3 por: {rule['rule_text']}",message_id)
@@ -346,6 +348,39 @@ def call_moderation_ai(text):
         except: continue
     return {"toxic":ht,"divulg":hd,"sensual":hs}
 
+def gerar_aviso_ia(nome, motivo, texto_original):
+    if not PROVIDERS: return f"⚠️ {nome}, isso não pode aqui no grupo. ({motivo})"
+    prompt = f'Você é a moderadora Orbit, jovem, direta. O usuário {nome} mandou "{texto_original[:120]}" e foi bloqueado por {motivo}. Crie um aviso curto, 1 frase, max 18 palavras, em PT-BR informal, sem palavrão. Varie.'
+    for prov in ORDER_PREFERENCE:
+        if prov not in PROVIDERS: continue
+        cfg=PROVIDERS[prov]
+        try:
+            sess=get_session()
+            if cfg["format"]=="cloudflare":
+                r=sess.post(cfg["endpoint"],json={"messages":[{"role":"user","content":prompt}]},headers={"Authorization":f"Bearer {cfg['key']}"},timeout=5)
+                if r.status_code==200:
+                    resp=r.json().get("result",{}).get("response","").strip()
+                    if resp: return resp[:190]
+            elif cfg["format"]=="openai":
+                model=FALLBACK_MODELS.get(prov,["llama-3.1-8b-instant"])[0]
+                endpoint=cfg["endpoint"]
+                if "groq.com" in endpoint: endpoint="https://api.groq.com/openai/v1/chat/completions"
+                elif "cerebras" in endpoint: endpoint="https://api.cerebras.ai/v1/chat/completions"
+                elif not endpoint.endswith("/chat/completions"): endpoint=endpoint.rstrip("/")+"/chat/completions"
+                r=sess.post(endpoint,json={"model":model,"messages":[{"role":"user","content":prompt}],"temperature":0.85,"max_tokens":60},headers={"Authorization":f"Bearer {cfg['key']}"},timeout=5)
+                if r.status_code==200:
+                    resp=r.json()["choices"][0]["message"]["content"].strip()
+                    if resp: return resp[:190]
+            elif cfg["format"]=="gemini":
+                model=FALLBACK_MODELS.get(prov,["gemini-1.5-flash"])[0]
+                url=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={cfg['key']}"
+                r=sess.post(url,json={"contents":[{"parts":[{"text":prompt}]}]},headers={"Content-Type":"application/json"},timeout=5)
+                if r.status_code==200:
+                    resp=r.json().get("candidates",[{}])[0].get("content",{}).get("parts",[{}])[0].get("text","").strip()
+                    if resp: return resp[:190]
+        except: continue
+    return f"⚠️ {nome}, isso não pode aqui no grupo. ({motivo})"
+
 def backup_worker():
     global backup_pending,last_backup
     while True:
@@ -392,7 +427,6 @@ def get_admin_groups_for_user(user_id):
         try:
             cid = str(g["chat_id"])
             t = g["title"]
-            # se titulo for None ou igual ao ID, busca na API
             if not t or t == "None" or t == cid or t.startswith("-100"):
                 try:
                     info = telegram_req("getChat", {"chat_id": cid})
@@ -518,7 +552,7 @@ def handle_private(msg):
                 if not groups:
                     send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
                     return
-                    send(chat_id,f"🤖 *Seus grupos ({len(groups)})* - toque nos botões:")
+                send(chat_id,f"🤖 *Seus grupos ({len(groups)})* - toque nos botões:")
                 for g in groups:
                     cid=g["chat_id"]
                     title=(g["title"] or "Grupo").strip()
@@ -601,7 +635,7 @@ def handle_private(msg):
             backup_pending=True
             send(chat_id,f"✅ Salvo em {target_chat}: {rules}")
             return
-    send(chat_id,"📚 *PV CONFIG - V17.7 BOTOES*\n`/start` - seus grupos com botões\nCole regras aqui e eu pergunto onde salvar.")
+    send(chat_id,"📚 *PV CONFIG - V17.8 FALANTE*\n`/start` - seus grupos com botões\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
     global backup_pending
@@ -683,7 +717,7 @@ def process_update(update):
             cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
             c.close()
             if cmd in ["/painel","/help"]:
-                send(chat_id,f"⚙️ *PAINEL V17.7 BOTOES By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock /logs",mid)
+                send(chat_id,f"⚙️ *PAINEL V17.8 FALANTE By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock",mid)
             else: send(chat_id,f"🤖 {ORBIT_CORE}",mid)
             return
         if not is_admin(chat_id,uid):
@@ -716,8 +750,6 @@ def process_update(update):
             if tgt and not is_protected(chat_id,tgt):
                 r=execute_action(chat_id,"BAN",tgt,None,"ban ADM")
                 send(chat_id,"🚫 Banido" if r["success"] else "❌",mid)
-        elif cmd=="/unban":
-            if args: telegram_req("unbanChatMember",{"chat_id":chat_id,"user_id":int(args[0])})
         elif cmd=="/kick":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
             if tgt and not is_protected(chat_id,tgt): execute_action(chat_id,"KICK",tgt,None,"kick")
@@ -727,12 +759,6 @@ def process_update(update):
         elif cmd=="/unmute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
             execute_action(chat_id,"UNMUTE",tgt,None,"unmute")
-        elif cmd=="/delete":
-            tgt_mid=msg.get("reply_to_message",{}).get("message_id")
-            if tgt_mid: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":tgt_mid})
-        elif cmd=="/warn":
-            tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if tgt and not is_protected(chat_id,tgt): execute_action(chat_id,"WARN",tgt,None,"warn")
         elif cmd=="/lock":
             set_cfg(chat_id,"lock_group",1)
             telegram_req("setChatPermissions",{"chat_id":chat_id,"permissions":{"can_send_messages":False}})
@@ -799,7 +825,7 @@ def process_update(update):
     if not text: return
     custom=check_custom_rules(text,chat_id)
     if custom:
-        handle_custom_violation(chat_id,uid,custom,mid)
+        handle_custom_violation(chat_id,uid,custom,mid, msg["from"].get("first_name",""))
         return
     key=(str(chat_id),str(uid))
     now=time.time()
@@ -815,18 +841,24 @@ def process_update(update):
         execute_action(chat_id,"DELETE",None,mid,"spam repetido")
         return
     ai_res=call_moderation_ai(text)
+    nome = msg["from"].get("first_name","amigo")
     if float(ai_res.get("divulg",0))>=0.75 and cfg.get("anti_divulgation"):
         allowed=[d.strip().lower() for d in (cfg.get("allowed_links","").split(",")) if d.strip()]
         if not any(d in text.lower() for d in allowed):
             execute_action(chat_id,"DELETE",None,mid,f"divulg {ai_res['divulg']:.2f}")
+            aviso = gerar_aviso_ia(nome, "divulgação", text)
+            send(chat_id, aviso)
             return
     if float(ai_res.get("toxic",0))>=0.80:
         execute_action(chat_id,"DELETE",None,mid,f"toxic {ai_res['toxic']:.2f}")
+        aviso = gerar_aviso_ia(nome, "linguagem tóxica", text)
+        send(chat_id, aviso)
         return
     if float(ai_res.get("sensual",0))>=0.85 and cfg.get("anti_sensual"):
-        if cfg.get("sensual_mode")=="restrito" or float(ai_res.get("sensual",0))>=0.85:
-            execute_action(chat_id,"DELETE",None,mid,f"+18 {ai_res['sensual']:.2f}")
-            return
+        execute_action(chat_id,"DELETE",None,mid,f"+18 {ai_res['sensual']:.2f}")
+        aviso = gerar_aviso_ia(nome, "conteúdo +18", text)
+        send(chat_id, aviso)
+        return
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=PORT)
