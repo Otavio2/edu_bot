@@ -115,8 +115,16 @@ def init_db():
     CREATE TABLE IF NOT EXISTS user_rule_hits(chat_id TEXT,user_id TEXT,rule_id INTEGER,count INTEGER DEFAULT 1,last_at TEXT,PRIMARY KEY(chat_id,user_id,rule_id));
     """)
     c.commit()
+    # FIX V17.6.1 - MIGRATION: banco antigo do JSONBIN nao tem title
+    try:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(group_rules)").fetchall()]
+        if "title" not in cols:
+            c.execute("ALTER TABLE group_rules ADD COLUMN title TEXT")
+            c.commit()
+            print(f"[{KLEBER_SIG}] Migration: coluna title adicionada")
+    except Exception as e:
+        print(f"Migration erro: {e}")
     c.close()
-init_db()
 
 def telegram_req(method,payload=None):
     url=f"{TELEGRAM_API_URL}/{method}"
