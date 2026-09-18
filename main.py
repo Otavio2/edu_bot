@@ -360,22 +360,18 @@ def health():
 # ===== FUNÇÃO PV - LISTA GRUPOS DO ADM =====
 def get_admin_groups_for_user(user_id):
     c=get_db()
-    all_groups=c.execute("SELECT chat_id,title FROM group_rules").fetchall()
+    all_groups=c.execute("SELECT chat_id,title FROM group_rules ORDER BY rowid DESC LIMIT 50").fetchall()
     c.close()
     admin_groups=[]
     for g in all_groups:
         cid=g["chat_id"]
-        if len(admin_groups)>=30: break
+        if len(admin_groups)>=15: break
         try:
             if is_admin(cid,user_id):
-                info=telegram_req("getChat",{"chat_id":cid})
-                title=info.get("result",{}).get("title") or g["title"] or cid
-                c=get_db()
-                rc=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(cid,)).fetchone()["c"]
-                c.close()
-                admin_groups.append({"chat_id":cid,"title":title,"rules":rc})
-        except: continue
-        time.sleep(0.2)
+                title=g["title"] or cid
+                admin_groups.append({"chat_id":cid,"title":title,"rules":0})
+        except:
+            continue
     return admin_groups
 
 def handle_private(msg):
@@ -384,6 +380,7 @@ def handle_private(msg):
     text=(msg.get("text","") or "").strip()
     low=text.lower()
 
+    # 1. COMANDOS COM ID: /regras_-100xxx /painel_-100xxx etc
     m=re.match(r"/(\w+)_(-?\d+)(?:\s+(.*))?", text)
     if m:
         cmd=m.group(1).lower()
@@ -443,26 +440,33 @@ def handle_private(msg):
             send(chat_id,f"⚙️ *Painel {target_chat}*\nRegras: {rc}/20\nLock: {'ON' if cfg.get('lock_group') else 'OFF'}\nSensual: {cfg.get('sensual_mode')}")
             return
 
+    # 2. START / PAINEL / GRUPOS
     if low in ["/start","/meusgrupos","/grupos","/painel"]:
-        send(chat_id,"🔍 Buscando seus grupos onde sou ADM... (10s)")
+        sent = send(chat_id,"🔍 Buscando seus grupos onde sou ADM... aguarde")
         groups=get_admin_groups_for_user(uid)
+        try:
+            mid = sent.get("result",{}).get("message_id")
+            if mid: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
+        except: pass
+
         if not groups:
-            send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou. Me adicione como ADM.")
+            send(chat_id,"📭 Você não é ADM em nenhum grupo onde eu estou.\n\n1- Me adicione no grupo\n2- Me promova a ADM\n3- Mande /start aqui de novo")
             return
         txt=f"🤖 *Seus grupos ({len(groups)})*\n\n"
         for g in groups:
             cid=g["chat_id"]
-            txt+=f"📌 *{g['title']}*\n`{cid}` - {g['rules']} regras\n`/regras_{cid}`\n`/comoadd_{cid}`\n`/painel_{cid}`\n`/lock_{cid}` / `/unlock_{cid}`\n\n"
+            txt+=f"📌 *{g['title']}*\n`{cid}`\n`/regras_{cid}` - ver regras\n`/painel_{cid}`\n\n"
         txt+="Cole regras aqui e eu pergunto onde salvar."
         send(chat_id,txt)
         return
 
+    # 3. DETECTA REGRAS COLADAS NO PV
     if len(text)>=5 and not text.startswith("/"):
         rules=parse_rules_from_text(text)
         if rules:
             groups=get_admin_groups_for_user(uid)
             if not groups:
-                send(chat_id,"📭 Sem grupos.")
+                send(chat_id,"📭 Sem grupos. Me coloque como ADM primeiro.")
                 return
             txt=f"🤖 Detectei {len(rules)} regra(s):\n" + "\n".join([f"• {r}" for r in rules]) + f"\n\nEm qual salvar?\n"
             for g in groups[:10]:
@@ -493,6 +497,7 @@ def handle_private(msg):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid)))
                 c.commit()
                 c.close()
+            global backup_pending
             backup_pending=True
             send(chat_id,f"✅ {len(rules)} salva(s) em {target_chat}!")
         except Exception as e:
@@ -517,7 +522,6 @@ def handle_private(msg):
             backup_pending=True
             send(chat_id,f"✅ Salvo em {target_chat}: {rules}")
             return
-
     send(chat_id,"📚 *PV CONFIG*\n`/start` ou `/meusgrupos`\n`/regras_-100xxx`\n`/comoadd_-100xxx`\n`/delregra_-100xxx 2`\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
