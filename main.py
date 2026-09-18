@@ -196,13 +196,11 @@ def parse_rules_from_text(text):
     for l in lines:
         low=l.lower()
         if len(l)>250: continue
-        if any(k in low for k in ("proibido","proibida","banido","vetado","não pode","nao pode","proibir","sem link","sem porno","sem politica")) or low.startswith("proibido") or low.startswith("banido"):
+        # SÓ vira regra se tiver palavra de proibição
+        if any(k in low for k in ("proibido","proibida","banido","banida","vetado","vetada","nao pode","não pode","proibir","sem link","sem porno","sem politica","sem divulgação","sem divulgacao")) or low.startswith("proibido") or low.startswith("banido"):
             rules.append(l[:200])
-    if not rules and len(lines)>=2 and len(lines)<=20:
-        if all(len(x.split())<=6 and not x.endswith("?") for x in lines):
-            rules=lines[:20]
     return rules[:20]
-
+    
 def get_keywords(rule_text):
     words=re.findall(r"\w{4,}",rule_text.lower())
     kws=[w for w in words if w not in STOP_RULE]
