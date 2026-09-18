@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.4 PV FINAL 100% ADM GRUPO+PV - BY Kʆɛɓɛʀ - RENDER READY
+# ORBIT ALLIANCE V17.5 PV FINAL FIX - BY Kʆɛɓɛʀ - RENDER READY
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -15,7 +15,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit V17.4 PV by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit V17.5 PV by {KLEBER_SIG}"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
 JB_HEADERS = {"X-Master-Key": JSONBIN_KEY, "Content-Type":"application/json"} if JSONBIN_KEY else {}
@@ -30,6 +30,7 @@ mem_flood = defaultdict(lambda: deque(maxlen=15))
 mem_texts = defaultdict(lambda: deque(maxlen=5))
 mem_fight = defaultdict(lambda: deque(maxlen=20))
 mem_join = defaultdict(lambda: deque(maxlen=10))
+admin_cache = {} # chat_id_uid -> (bool, timestamp)
 backup_pending = False
 last_backup = 0
 BOT_ID = None
@@ -165,9 +166,34 @@ def set_cfg(chat_id,key,val):
     backup_pending=True
 
 def is_admin(chat_id,uid):
-    if str(uid)==CREATOR_ID: return True
-    m=telegram_req("getChatMember",{"chat_id":chat_id,"user_id":uid})
-    return m.get("ok") and m.get("result",{}).get("status") in ("administrator","creator")
+    key=f"{chat_id}_{uid}"
+    now=time.time()
+    if key in admin_cache:
+        val, ts = admin_cache[key]
+        if now - ts < 300:
+            return val
+    # CREATOR_ID é dono do bot, mas só vale se grupo existe no DB
+    if str(uid)==CREATOR_ID:
+        try:
+            c=get_db()
+            exists=c.execute("SELECT 1 FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone()
+            c.close()
+            if exists:
+                admin_cache[key]=(True, now)
+                return True
+        except: pass
+
+    # timeout curto para não travar PV
+    try:
+        url=f"{TELEGRAM_API_URL}/getChatMember"
+        r=requests.post(url, json={"chat_id":chat_id,"user_id":uid}, timeout=4)
+        j=r.json()
+        ok=j.get("ok") and j.get("result",{}).get("status") in ("administrator","creator")
+        admin_cache[key]=(ok, now)
+        return ok
+    except:
+        admin_cache[key]=(False, now)
+        return False
 
 def is_protected(chat_id,uid):
     if str(uid)==str(BOT_ID) or str(uid)==CREATOR_ID: return True
@@ -190,17 +216,17 @@ def wipe_group_data(chat_id):
     except: pass
 
 def parse_rules_from_text(text):
+    # FIX V17.5: Só aceita se tiver palavra de proibição, não qualquer frase curta
     lines=[l.strip() for l in text.splitlines() if len(l.strip())>=5]
     if not lines and len(text.strip())>=8: lines=[text.strip()]
     rules=[]
     for l in lines:
         low=l.lower()
         if len(l)>250: continue
-        # SÓ vira regra se tiver palavra de proibição
-        if any(k in low for k in ("proibido","proibida","banido","banida","vetado","vetada","nao pode","não pode","proibir","sem link","sem porno","sem politica","sem divulgação","sem divulgacao")) or low.startswith("proibido") or low.startswith("banido"):
+        if any(k in low for k in ("proibido","proibida","banido","banida","vetado","vetada","nao pode","não pode","proibir","sem link","sem porno","sem politica","sem divulgação","sem divulgacao","proibida a venda","proibido link")) or low.startswith("proibido") or low.startswith("banido"):
             rules.append(l[:200])
     return rules[:20]
-    
+
 def get_keywords(rule_text):
     words=re.findall(r"\w{4,}",rule_text.lower())
     kws=[w for w in words if w not in STOP_RULE]
@@ -357,18 +383,20 @@ def health():
 
 def get_admin_groups_for_user(user_id):
     c=get_db()
-    all_groups=c.execute("SELECT chat_id,title FROM group_rules ORDER BY rowid DESC LIMIT 50").fetchall()
+    all_groups=c.execute("SELECT chat_id,title FROM group_rules ORDER BY rowid DESC LIMIT 20").fetchall()
     c.close()
     admin_groups=[]
-    for g in all_groups:
-        cid=g["chat_id"]
-        if len(admin_groups)>=15: break
+    def check_one(g):
         try:
-            if is_admin(cid,user_id):
-                title=g["title"] or cid
-                admin_groups.append({"chat_id":cid,"title":title,"rules":0})
-        except:
-            continue
+            if is_admin(g["chat_id"], user_id):
+                return {"chat_id":g["chat_id"],"title":g["title"] or g["chat_id"]}
+        except: return None
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        results=list(ex.map(check_one, all_groups))
+    for r in results:
+        if r:
+            admin_groups.append(r)
+            if len(admin_groups)>=10: break
     return admin_groups
 
 def handle_private(msg):
@@ -583,7 +611,7 @@ def process_update(update):
             cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
             c.close()
             if cmd in ["/painel","/help"]:
-                send(chat_id,f"⚙️ *PAINEL V17.4 PV By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock /logs",mid)
+                send(chat_id,f"⚙️ *PAINEL V17.5 PV By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock /logs",mid)
             else: send(chat_id,f"🤖 {ORBIT_CORE}",mid)
             return
         if not is_admin(chat_id,uid):
