@@ -742,5 +742,4 @@ def process_update(update):
             return
 
 if __name__=="__main__":
-    print(f"[{KLEBER_SIG}] START {ORBIT_CORE}")
     app.run(host="0.0.0.0",port=PORT)
