@@ -375,6 +375,7 @@ def get_admin_groups_for_user(user_id):
     return admin_groups
 
 def handle_private(msg):
+    global backup_pending
     chat_id=msg["chat"]["id"]
     uid=msg["from"]["id"]
     text=(msg.get("text","") or "").strip()
@@ -525,12 +526,9 @@ def handle_private(msg):
     send(chat_id,"📚 *PV CONFIG*\n`/start` ou `/meusgrupos`\n`/regras_-100xxx`\n`/comoadd_-100xxx`\n`/delregra_-100xxx 2`\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
+    global backup_pending
     msg=update.get("message") or update.get("edited_message")
     if not msg: return
-    chat_type=msg["chat"].get("type","group")
-    if chat_type=="private":
-        handle_private(msg)
-        return
     chat_id=msg["chat"]["id"]
     uid=msg["from"]["id"]
     text=(msg.get("text","") or msg.get("caption","")).strip()
