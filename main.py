@@ -395,7 +395,7 @@ def backup_worker():
                 c.commit()
                 c.close()
         except: pass
-        if not JSONBIN_URL or not backup_pending or time.time()-last_backup<300: continue
+        if not JSONBIN_URL or not backup_pending or time.time()-last_backup<900: continue
         with backup_lock:
             try:
                 sz=os.path.getsize(DATABASE_PATH)
