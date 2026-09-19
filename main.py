@@ -446,39 +446,79 @@ def get_admin_groups_for_user(user_id):
             if len(admin_groups)>=10: break
     return admin_groups
 
+def build_config_kb(chat_id):
+    cfg=get_cfg(chat_id)
+    return {"inline_keyboard":[
+        [{"text":f"{'✅' if cfg.get('anti_divulgation') else '❌'} Anti-Divulg","callback_data":f"cfg|{chat_id}|anti_divulgation"},
+         {"text":f"{'✅' if cfg.get('anti_sensual') else '❌'} Anti +18","callback_data":f"cfg|{chat_id}|anti_sensual"}],
+        [{"text":f"{'✅' if cfg.get('anti_flood') else '❌'} Anti-Flood","callback_data":f"cfg|{chat_id}|anti_flood"},
+         {"text":f"{'✅' if cfg.get('welcome') else '❌'} Boas-vindas","callback_data":f"cfg|{chat_id}|welcome"}],
+        [{"text":f"{'🔒 Trancar' if not cfg.get('lock_group') else '🔓 Destrancar'} Grupo","callback_data":f"lock|{chat_id}"}],
+        [{"text":"📜 Ver Regras","callback_data":f"regras|{chat_id}"},{"text":"🔄 Atualizar","callback_data":f"painel|{chat_id}"}]
+    ]}
+
 def handle_callback(cb):
+    global backup_pending
     uid=str(cb["from"]["id"])
     data=cb.get("data","")
-    chat_id=cb["message"]["chat"]["id"]
+    chat_id_msg=cb["message"]["chat"]["id"]
+    mid=cb["message"]["message_id"]
     parts=data.split("|")
     if len(parts)<2: return
     action=parts[0]; target_chat=parts[1]
     if not is_admin(target_chat,uid):
         telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Você não é ADM desse grupo","show_alert":True}); return
+
+    if action=="cfg":
+        key=parts[2]
+        cfg=get_cfg(target_chat)
+        new_val=0 if cfg.get(key) else 1
+        set_cfg(target_chat,key,new_val)
+        telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":f"{key} = {'ON' if new_val else 'OFF'}"})
+        try:
+            telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
+        except: pass
+        return
+
+    if action=="lock":
+        cfg=get_cfg(target_chat)
+        if cfg.get("lock_group"):
+            set_cfg(target_chat,"lock_group",0)
+            telegram_req("setChatPermissions",{"chat_id":target_chat,"permissions":{"can_send_messages":True,"can_send_media_messages":True,"can_send_other_messages":True}})
+            telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Grupo destrancado"})
+        else:
+            set_cfg(target_chat,"lock_group",1)
+            telegram_req("setChatPermissions",{"chat_id":target_chat,"permissions":{"can_send_messages":False}})
+            telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Grupo trancado"})
+        try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
+        except: pass
+        return
+
     if action=="regras":
         c=get_db(); rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(target_chat,)).fetchall(); c.close()
-        if not rows: send(chat_id,f"📭 Nenhuma regra em *{get_cfg(target_chat).get('title')}*")
-        else: send(chat_id,f"📜 *{get_cfg(target_chat).get('title')} - Regras ({len(rows)}/20):*\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows]))
+        if not rows: send(chat_id_msg,f"📭 Nenhuma regra em *{get_cfg(target_chat).get('title')}*")
+        else: send(chat_id_msg,f"📜 *{get_cfg(target_chat).get('title')} - Regras ({len(rows)}/20):*\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows]))
     elif action=="painel":
         cfg=get_cfg(target_chat); c=get_db(); cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(target_chat,)).fetchone()["c"]; c.close()
-        send(chat_id,f"⚙️ *Painel {cfg.get('title')}*\nRegras: {cr}/20\nLock: {'ON' if cfg.get('lock_group') else 'OFF'}\nSensual: {cfg.get('sensual_mode')}")
+        txt=f"⚙️ *Painel {cfg.get('title')}*\n\nRegras: {cr}/20\nLock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\nToque pra ligar/desligar:"
+        telegram_req("editMessageText",{"chat_id":chat_id_msg,"message_id":mid,"text":txt,"parse_mode":"Markdown","reply_markup":build_config_kb(target_chat)})
     elif action=="del":
         rid=parts[2] if len(parts)>2 else "1"
         try:
             with db_lock: c=get_db(); c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(target_chat,int(rid))); c.commit(); c.close()
-            global backup_pending; backup_pending=True
-            send(chat_id,f"✅ Regra {rid} apagada de *{get_cfg(target_chat).get('title')}*")
-        except: send(chat_id,"Erro ao apagar")
+            backup_pending=True
+            send(chat_id_msg,f"✅ Regra {rid} apagada de *{get_cfg(target_chat).get('title')}*")
+        except: send(chat_id_msg,"Erro ao apagar")
     elif action=="salvar":
         c=get_db(); pend=c.execute("SELECT rules_json FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)).fetchone(); c.close()
-        if not pend: send(chat_id,"Nenhuma pendente"); telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"]}); return
+        if not pend: send(chat_id_msg,"Nenhuma pendente"); telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"]}); return
         data=json.loads(pend["rules_json"]); rules=data.get("rules", data if isinstance(data,list) else [])
         with db_lock:
             c=get_db()
             for rtxt in rules: c.execute("INSERT INTO custom_rules(chat_id,rule_text,keywords,created_by,created_at) VALUES(?,?,?,?,?)",(target_chat,rtxt,get_keywords(rtxt),uid,datetime.now(timezone.utc).isoformat()))
             c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)); c.commit(); c.close()
         backup_pending=True
-        send(chat_id,f"✅ {len(rules)} regra(s) salva(s) em *{get_cfg(target_chat).get('title')}*!")
+        send(chat_id_msg,f"✅ {len(rules)} regra(s) salva(s) em *{get_cfg(target_chat).get('title')}*!")
     telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"OK"})
 
 def handle_private(msg):
