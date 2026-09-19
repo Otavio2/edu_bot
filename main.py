@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.8 FALANTE - BASE V17.7 BOTOES - BY Kʆɛɓɛʀ
+# ORBIT ALLIANCE V17.8 ORIGINAL 1:1 - BY Kʆɛɓɛʀ - FIX BACKUP
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -384,7 +384,7 @@ def gerar_aviso_ia(nome, motivo, texto_original):
 def backup_worker():
     global backup_pending,last_backup
     while True:
-        time.sleep(60)
+        time.sleep(300)
         try:
             with db_lock:
                 c=get_db()
@@ -468,18 +468,15 @@ def handle_callback(cb):
     action=parts[0]; target_chat=parts[1]
     if not is_admin(target_chat,uid):
         telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Você não é ADM desse grupo","show_alert":True}); return
-
     if action=="cfg":
         key=parts[2]
         cfg=get_cfg(target_chat)
         new_val=0 if cfg.get(key) else 1
         set_cfg(target_chat,key,new_val)
         telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":f"{key} = {'ON' if new_val else 'OFF'}"})
-        try:
-            telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
+        try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
         except: pass
         return
-
     if action=="lock":
         cfg=get_cfg(target_chat)
         if cfg.get("lock_group"):
@@ -493,7 +490,6 @@ def handle_callback(cb):
         try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
         except: pass
         return
-
     if action=="regras":
         c=get_db(); rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(target_chat,)).fetchall(); c.close()
         if not rows: send(chat_id_msg,f"📭 Nenhuma regra em *{get_cfg(target_chat).get('title')}*")
@@ -704,7 +700,7 @@ def process_update(update):
         dq.append(now)
         while dq and now-dq[0]>10: dq.popleft()
         if len(dq)>=5:
-            send(chat_id,"🚨 Anti-raid!")
+            send(chat_id,"🚨 Anti-raid! Muitos joins - grupo trancado automaticamente")
             set_cfg(chat_id,"lock_group",1)
             dq.clear()
         if cfg.get("welcome"):
@@ -746,10 +742,10 @@ def process_update(update):
             rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(str(chat_id),)).fetchall()
             c.close()
             if cmd in ["/comoadd","/tutorial"]:
-                send(chat_id,"📚 *COMO ADD REGRA*\nCole: `proibido falar de politica` -> SIM/NAO\nOu lista:\n`proibido politica\nproibido link`\n`/regras` ver\n`/delregra 2` apagar\nIsolado só aqui. Max 20.",mid)
+                send(chat_id,"📚 *COMO ADD REGRA*\n\nCole uma frase que comece com proibido:\n`proibido falar de politica`\n\nOu lista:\n`proibido politica\nproibido link\nproibido divulgar`\n\nDepois responda SIM ou NAO\n\n`/regras` pra ver\n`/delregra 2` pra apagar\n`/resetregras` limpa tudo\n\nIsolado só aqui. Max 20.",mid)
                 return
-            if not rows: txt="📭 Nenhuma regra. /comoadd"
-            else: txt=f"📜 *Regras ({len(rows)}/20):*\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows])
+            if not rows: txt="📭 Nenhuma regra ainda. Use /comoadd"
+            else: txt=f"📜 *Regras deste grupo ({len(rows)}/20):*\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows])
             send(chat_id,txt,mid)
             return
         if cmd in ["/start","/help","/painel","/status"]:
@@ -757,11 +753,11 @@ def process_update(update):
             cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
             c.close()
             if cmd in ["/painel","/help"]:
-                send(chat_id,f"⚙️ *PAINEL V17.8 FALANTE By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock",mid)
-            else: send(chat_id,f"🤖 {ORBIT_CORE}",mid)
+                send(chat_id,f"⚙️ *PAINEL V17.8 FALANTE By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\nAnti-Divulg: {'ON' if cfg.get('anti_divulgation') else 'OFF'} | Anti+18: {'ON' if cfg.get('anti_sensual') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start pra gerenciar todos seus grupos\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock",mid,markup=build_config_kb(chat_id))
+            else: send(chat_id,f"🤖 {ORBIT_CORE} | {cr}/20 regras | @{BOT_USERNAME}",mid)
             return
         if not is_admin(chat_id,uid):
-            send(chat_id,"⚠️ So ADM.",mid)
+            send(chat_id,"⚠️ Só ADM pode usar este comando.",mid)
             return
         if cmd=="/delregra":
             if args:
@@ -774,37 +770,60 @@ def process_update(update):
                         c.close()
                     backup_pending=True
                     send(chat_id,f"✅ Regra {rid} apagada",mid)
-                except: pass
+                except: send(chat_id,"Use: /delregra 2",mid)
+            else:
+                send(chat_id,"Use: /delregra 2",mid)
             return
         if cmd=="/resetregras":
             with db_lock:
                 c=get_db()
                 c.execute("DELETE FROM custom_rules WHERE chat_id=?",(str(chat_id),))
+                c.execute("DELETE FROM pending_rules WHERE chat_id=?",(str(chat_id),))
                 c.commit()
                 c.close()
             backup_pending=True
-            send(chat_id,"✅ Resetado",mid)
+            send(chat_id,"✅ Todas as regras resetadas deste grupo",mid)
             return
         if cmd=="/ban":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
             if tgt and not is_protected(chat_id,tgt):
                 r=execute_action(chat_id,"BAN",tgt,None,"ban ADM")
-                send(chat_id,"🚫 Banido" if r["success"] else "❌",mid)
+                send(chat_id,"🚫 Banido" if r["success"] else "❌ Não consegui banir",mid)
+            return
         elif cmd=="/kick":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if tgt and not is_protected(chat_id,tgt): execute_action(chat_id,"KICK",tgt,None,"kick")
+            if tgt and not is_protected(chat_id,tgt):
+                execute_action(chat_id,"KICK",tgt,None,"kick ADM")
+                send(chat_id,"👢 Kick",mid)
+            return
         elif cmd=="/mute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            if tgt and not is_protected(chat_id,tgt): execute_action(chat_id,"MUTE",tgt,None,"mute")
+            if tgt and not is_protected(chat_id,tgt):
+                execute_action(chat_id,"MUTE",tgt,None,"mute ADM")
+                send(chat_id,"🔇 Mutado 10min",mid)
+            return
         elif cmd=="/unmute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
-            execute_action(chat_id,"UNMUTE",tgt,None,"unmute")
+            if tgt:
+                execute_action(chat_id,"UNMUTE",tgt,None,"unmute ADM")
+                send(chat_id,"🔊 Desmutado",mid)
+            return
+        elif cmd=="/warn":
+            tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            if tgt and not is_protected(chat_id,tgt):
+                execute_action(chat_id,"WARN",tgt,None,"warn ADM")
+                send(chat_id,"⚠️ Warn aplicado",mid)
+            return
         elif cmd=="/lock":
             set_cfg(chat_id,"lock_group",1)
             telegram_req("setChatPermissions",{"chat_id":chat_id,"permissions":{"can_send_messages":False}})
+            send(chat_id,"🔒 Grupo trancado",mid)
+            return
         elif cmd=="/unlock":
             set_cfg(chat_id,"lock_group",0)
             telegram_req("setChatPermissions",{"chat_id":chat_id,"permissions":{"can_send_messages":True,"can_send_media_messages":True,"can_send_other_messages":True}})
+            send(chat_id,"🔓 Grupo destrancado",mid)
+            return
         try: telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":mid})
         except: pass
         return
@@ -835,7 +854,7 @@ def process_update(update):
                 c.commit()
                 c.close()
             backup_pending=True
-            send(chat_id,f"✅ {len(rules)} regra(s) salva(s) só aqui!\n" + "\n".join([f"• {r}" for r in rules]),mid)
+            send(chat_id,f"✅ {len(rules)} regra(s) salva(s) só aqui neste grupo!\n" + "\n".join([f"• {r}" for r in rules]),mid)
             return
         if pend and low in ("nao","não","n","cancelar"):
             with db_lock:
@@ -854,8 +873,8 @@ def process_update(update):
                     c.commit()
                     c.close()
                 backup_pending=True
-                if len(rules)==1: send(chat_id,f"🤖 Detectei:\n`{rules[0]}`\nSalvar? SIM/NAO",mid)
-                else: send(chat_id,f"🤖 Detectei {len(rules)}:\n" + "\n".join([f"{i+1}. {r}" for i,r in enumerate(rules)]) + "\nSalvar? SIM/NAO",mid)
+                if len(rules)==1: send(chat_id,f"🤖 Detectei:\n`{rules[0]}`\nSalvar só aqui? Responda SIM ou NAO",mid)
+                else: send(chat_id,f"🤖 Detectei {len(rules)} regras:\n" + "\n".join([f"{i+1}. {r}" for i,r in enumerate(rules)]) + "\nSalvar só aqui? SIM/NAO",mid)
                 return
         return
     if uid==BOT_ID: return
