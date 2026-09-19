@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.8 ORIGINAL 1:1 - BY Kʆɛɓɛʀ - FIX BACKUP
+# ORBIT ALLIANCE V17.9 - FIX REGRAS + SETWELCOME - BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -11,11 +11,11 @@ CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 JSONBIN_ID = os.getenv("JSONBIN_ID")
 JSONBIN_KEY = os.getenv("JSONBIN_KEY")
-DATABASE_PATH = os.getenv("DATABASE_PATH","Orbit.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH","/data/Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit V17.8 FALANTE by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit V17.9 FIX by {KLEBER_SIG}"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
 JB_HEADERS = {"X-Master-Key": JSONBIN_KEY, "Content-Type":"application/json"} if JSONBIN_KEY else {}
@@ -124,6 +124,19 @@ def init_db():
     c.close()
 init_db()
 
+def force_backup_now():
+    if not JSONBIN_URL: return
+    try:
+        with backup_lock:
+            if not os.path.exists(DATABASE_PATH): return
+            if os.path.getsize(DATABASE_PATH)<5000: return
+            with open(DATABASE_PATH,"rb") as f: b64=base64.b64encode(f.read()).decode()
+            requests.put(JSONBIN_URL,json={"db":b64,"db_base64":b64,"updated":datetime.now(timezone.utc).isoformat(),"by":KLEBER_SIG},headers=JB_HEADERS,timeout=15)
+            global last_backup, backup_pending
+            last_backup=time.time()
+            backup_pending=False
+    except: pass
+
 def telegram_req(method,payload=None):
     url=f"{TELEGRAM_API_URL}/{method}"
     for _ in range(3):
@@ -168,8 +181,7 @@ def set_cfg(chat_id,key,val):
         c.execute(f"UPDATE group_rules SET {key}=?, updated_at=? WHERE chat_id=?",(val,datetime.now(timezone.utc).isoformat(),str(chat_id)))
         c.commit()
         c.close()
-    global backup_pending
-    backup_pending=True
+    threading.Thread(target=force_backup_now, daemon=True).start()
 
 def is_admin(chat_id,uid):
     key=f"{chat_id}_{uid}"
@@ -214,8 +226,7 @@ def wipe_group_data(chat_id):
             if str(chat_id) in str(k): del mem_flood[k]
         mem_fight.pop(str(chat_id),None)
         mem_join.pop(str(chat_id),None)
-        global backup_pending
-        backup_pending=True
+        threading.Thread(target=force_backup_now, daemon=True).start()
     except: pass
 
 def parse_rules_from_text(text):
@@ -256,8 +267,7 @@ def handle_custom_violation(chat_id,user_id,rule,message_id, user_name=""):
         c.execute("INSERT OR REPLACE INTO user_rule_hits(chat_id,user_id,rule_id,count,last_at) VALUES(?,?,?,?,?)",(str(chat_id),str(user_id),rule_id,cnt,datetime.now(timezone.utc).isoformat()))
         c.commit()
         c.close()
-    global backup_pending
-    backup_pending=True
+    threading.Thread(target=force_backup_now, daemon=True).start()
     telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":message_id})
     if cnt==1:
         aviso = gerar_aviso_ia(user_name or "amigo", f'regra: {rule["rule_text"]}', rule["rule_text"])
@@ -395,16 +405,8 @@ def backup_worker():
                 c.commit()
                 c.close()
         except: pass
-        if not JSONBIN_URL or not backup_pending or time.time()-last_backup<900: continue
-        with backup_lock:
-            try:
-                sz=os.path.getsize(DATABASE_PATH)
-                if sz<5000: continue
-                with open(DATABASE_PATH,"rb") as f: b64=base64.b64encode(f.read()).decode()
-                requests.put(JSONBIN_URL,json={"db":b64,"db_base64":b64,"updated":datetime.now(timezone.utc).isoformat(),"by":KLEBER_SIG},headers=JB_HEADERS,timeout=15)
-                last_backup=time.time()
-                backup_pending=False
-            except: pass
+        if not JSONBIN_URL or not backup_pending or time.time()-last_backup<300: continue
+        force_backup_now()
 threading.Thread(target=backup_worker,daemon=True).start()
 
 @app.route(WEBHOOK_PATH,methods=["POST"])
@@ -453,12 +455,12 @@ def build_config_kb(chat_id):
          {"text":f"{'✅' if cfg.get('anti_sensual') else '❌'} Anti +18","callback_data":f"cfg|{chat_id}|anti_sensual"}],
         [{"text":f"{'✅' if cfg.get('anti_flood') else '❌'} Anti-Flood","callback_data":f"cfg|{chat_id}|anti_flood"},
          {"text":f"{'✅' if cfg.get('welcome') else '❌'} Boas-vindas","callback_data":f"cfg|{chat_id}|welcome"}],
+        [{"text":f"👋 Set Welcome","callback_data":f"setw|{chat_id}"},{"text":f"📜 Ver Regras","callback_data":f"regras|{chat_id}"}],
         [{"text":f"{'🔒 Trancar' if not cfg.get('lock_group') else '🔓 Destrancar'} Grupo","callback_data":f"lock|{chat_id}"}],
-        [{"text":"📜 Ver Regras","callback_data":f"regras|{chat_id}"},{"text":"🔄 Atualizar","callback_data":f"painel|{chat_id}"}]
+        [{"text":"🔄 Atualizar","callback_data":f"painel|{chat_id}"}]
     ]}
 
 def handle_callback(cb):
-    global backup_pending
     uid=str(cb["from"]["id"])
     data=cb.get("data","")
     chat_id_msg=cb["message"]["chat"]["id"]
@@ -476,6 +478,10 @@ def handle_callback(cb):
         telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":f"{key} = {'ON' if new_val else 'OFF'}"})
         try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
         except: pass
+        return
+    if action=="setw":
+        telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Mande no grupo: /setwelcome Sua mensagem"})
+        send(chat_id_msg,f"👋 Pra definir boas-vindas de *{get_cfg(target_chat).get('title')}*, vá no grupo e digite:\n\n`/setwelcome Bem vindo {{name}} ao {{group}}! 🚀`\n\nUse {{name}} pro nome e {{group}} pro nome do grupo.")
         return
     if action=="lock":
         cfg=get_cfg(target_chat)
@@ -502,7 +508,7 @@ def handle_callback(cb):
         rid=parts[2] if len(parts)>2 else "1"
         try:
             with db_lock: c=get_db(); c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(target_chat,int(rid))); c.commit(); c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id_msg,f"✅ Regra {rid} apagada de *{get_cfg(target_chat).get('title')}*")
         except: send(chat_id_msg,"Erro ao apagar")
     elif action=="salvar":
@@ -513,12 +519,11 @@ def handle_callback(cb):
             c=get_db()
             for rtxt in rules: c.execute("INSERT INTO custom_rules(chat_id,rule_text,keywords,created_by,created_at) VALUES(?,?,?,?,?)",(target_chat,rtxt,get_keywords(rtxt),uid,datetime.now(timezone.utc).isoformat()))
             c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)); c.commit(); c.close()
-        backup_pending=True
+        threading.Thread(target=force_backup_now, daemon=True).start()
         send(chat_id_msg,f"✅ {len(rules)} regra(s) salva(s) em *{get_cfg(target_chat).get('title')}*!")
     telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"OK"})
 
 def handle_private(msg):
-    global backup_pending
     chat_id=msg["chat"]["id"]
     uid=msg["from"]["id"]
     text=(msg.get("text","") or "").strip()
@@ -549,7 +554,7 @@ def handle_private(msg):
                     c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(target_chat,rid))
                     c.commit()
                     c.close()
-                backup_pending=True
+                threading.Thread(target=force_backup_now, daemon=True).start()
                 send(chat_id,f"✅ Regra {rid} apagada de {target_chat}")
             except: send(chat_id,"Use: /delregra_-100123 2")
             return
@@ -560,7 +565,7 @@ def handle_private(msg):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=?",(target_chat,))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id,f"✅ Resetado {target_chat}")
             return
         if cmd=="lock":
@@ -597,7 +602,7 @@ def handle_private(msg):
                     markup={"inline_keyboard":[
                         [{"text":f"📌 {title[:30]}","callback_data":f"painel|{cid}"}],
                         [{"text":"📜 Ver Regras","callback_data":f"regras|{cid}"},{"text":"⚙️ Painel","callback_data":f"painel|{cid}"}],
-                        [{"text":"🗑️ Apagar 1","callback_data":f"del|{cid}|1"},{"text":"🗑️ Apagar 2","callback_data":f"del|{cid}|2"}]
+                        [{"text":"👋 Set Welcome","callback_data":f"setw|{cid}"},{"text":"🗑️ Apagar 1","callback_data":f"del|{cid}|1"}]
                     ]}
                     send(chat_id,f"👇 Gerenciar *{title}*",markup=markup)
                 c=get_db(); pend=c.execute("SELECT rules_json FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid))).fetchone(); c.close()
@@ -648,7 +653,7 @@ def handle_private(msg):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid)))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id,f"✅ {len(rules)} salva(s) em {target_chat}!")
         except Exception as e:
             send(chat_id,f"Erro {e}")
@@ -668,13 +673,12 @@ def handle_private(msg):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",str(uid)))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id,f"✅ Salvo em {target_chat}: {rules}")
             return
-    send(chat_id,"📚 *PV CONFIG - V17.8 FALANTE*\n`/start` - seus grupos com botões\nCole regras aqui e eu pergunto onde salvar.")
+    send(chat_id,"📚 *PV CONFIG - V17.9*\n`/start` - seus grupos com botões\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
-    global backup_pending
     if "callback_query" in update:
         handle_callback(update["callback_query"])
         return
@@ -708,7 +712,8 @@ def process_update(update):
                 if str(u.get("id"))==str(BOT_ID): continue
                 nome=u.get("first_name","")
                 txt=cfg.get("welcome_msg","Bem-vindo {name}! 🚀")
-                try: txt=txt.format(name=nome)
+                try:
+                    txt=txt.replace("{name}", nome).replace("{group}", msg["chat"].get("title","grupo"))
                 except: pass
                 send(chat_id,txt)
         return
@@ -724,12 +729,12 @@ def process_update(update):
                 c.execute("DELETE FROM user_rule_hits WHERE chat_id=? AND user_id=?",(str(chat_id),left_id))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
         except: pass
         if cfg.get("goodbye"):
             nome=left.get("first_name","Alguem")
             txt=cfg.get("goodbye_msg","{name} saiu.")
-            try: txt=txt.format(name=nome)
+            try: txt=txt.replace("{name}", nome).replace("{group}", msg["chat"].get("title","grupo"))
             except: pass
             send(chat_id,txt)
         return
@@ -753,8 +758,17 @@ def process_update(update):
             cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
             c.close()
             if cmd in ["/painel","/help"]:
-                send(chat_id,f"⚙️ *PAINEL V17.8 FALANTE By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\nAnti-Divulg: {'ON' if cfg.get('anti_divulgation') else 'OFF'} | Anti+18: {'ON' if cfg.get('anti_sensual') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras`\n*PV:* Fale comigo no privado /start pra gerenciar todos seus grupos\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock",mid,markup=build_config_kb(chat_id))
+                send(chat_id,f"⚙️ *PAINEL V17.9 FIX By {KLEBER_SIG}*\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}\nAnti-Divulg: {'ON' if cfg.get('anti_divulgation') else 'OFF'} | Anti+18: {'ON' if cfg.get('anti_sensual') else 'OFF'}\n\n*REGRAS:* `/regras /comoadd /delregra /resetregras /setwelcome`\n*PV:* Fale comigo no privado /start pra gerenciar todos seus grupos\n*ADM:* /ban /kick /mute /unmute /warn /lock /unlock",mid,markup=build_config_kb(chat_id))
             else: send(chat_id,f"🤖 {ORBIT_CORE} | {cr}/20 regras | @{BOT_USERNAME}",mid)
+            return
+        if cmd=="/setwelcome":
+            if not is_admin(chat_id,uid):
+                send(chat_id,"🔒 Só ADM pode usar.",mid); return
+            welcome_text = text.replace("/setwelcome","").replace(f"@{BOT_USERNAME}","").strip()
+            if not welcome_text:
+                send(chat_id,f"❓ Use assim:\n\n`/setwelcome Bem vindo {{name}} ao {{group}}! 🚀`\n\nAtual: `{cfg.get('welcome_msg')}`",mid); return
+            set_cfg(chat_id,"welcome_msg",welcome_text)
+            send(chat_id,f"✅ Boas-vindas definida:\n\n{welcome_text}",mid)
             return
         if not is_admin(chat_id,uid):
             send(chat_id,"⚠️ Só ADM pode usar este comando.",mid)
@@ -768,7 +782,7 @@ def process_update(update):
                         c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(str(chat_id),rid))
                         c.commit()
                         c.close()
-                    backup_pending=True
+                    threading.Thread(target=force_backup_now, daemon=True).start()
                     send(chat_id,f"✅ Regra {rid} apagada",mid)
                 except: send(chat_id,"Use: /delregra 2",mid)
             else:
@@ -781,7 +795,7 @@ def process_update(update):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=?",(str(chat_id),))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id,"✅ Todas as regras resetadas deste grupo",mid)
             return
         if cmd=="/ban":
@@ -853,7 +867,7 @@ def process_update(update):
                 c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid)))
                 c.commit()
                 c.close()
-            backup_pending=True
+            threading.Thread(target=force_backup_now, daemon=True).start()
             send(chat_id,f"✅ {len(rules)} regra(s) salva(s) só aqui neste grupo!\n" + "\n".join([f"• {r}" for r in rules]),mid)
             return
         if pend and low in ("nao","não","n","cancelar"):
@@ -872,7 +886,6 @@ def process_update(update):
                     c.execute("INSERT OR REPLACE INTO pending_rules(chat_id,user_id,rules_json,created_at) VALUES(?,?,?,?)",(str(chat_id),str(uid),json.dumps(rules),datetime.now(timezone.utc).isoformat()))
                     c.commit()
                     c.close()
-                backup_pending=True
                 if len(rules)==1: send(chat_id,f"🤖 Detectei:\n`{rules[0]}`\nSalvar só aqui? Responda SIM ou NAO",mid)
                 else: send(chat_id,f"🤖 Detectei {len(rules)} regras:\n" + "\n".join([f"{i+1}. {r}" for i,r in enumerate(rules)]) + "\nSalvar só aqui? SIM/NAO",mid)
                 return
