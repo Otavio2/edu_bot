@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V17.9 - FIX REGRAS + SETWELCOME - BY Kʆɛɓɛʀ
+# ORBIT ALLIANCE V21 FREE FIX - MESMO V17.9 + STORAGE DINÂMICO BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, random
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -9,18 +9,38 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN: raise RuntimeError("TELEGRAM_TOKEN env missing")
 CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-JSONBIN_ID = os.getenv("JSONBIN_ID")
-JSONBIN_KEY = os.getenv("JSONBIN_KEY")
-DATABASE_PATH = os.getenv("DATABASE_PATH","/data/Orbit.db")
+
+# === FIX GRÁTIS - IGUAL SEU PROVIDERS_RAW ===
+STORAGE_RAW = {
+    "jsonbin": {"id_env": "JSONBIN_ID", "key_env": "JSONBIN_KEY", "endpoint_tpl": "https://api.jsonbin.io/v3/b/{id}"},
+}
+def build_storage_dynamic():
+    s={}
+    j_id = os.getenv("JSONBIN_ID","").strip()
+    j_key = os.getenv("JSONBIN_KEY","").strip()
+    # ignora IDs velhos 6aaf...
+    if j_id and j_key and len(j_id)>=20 and not j_id.startswith("6aaf"):
+        s["jsonbin"]={"id":j_id,"key":j_key,"endpoint":f"https://api.jsonbin.io/v3/b/{j_id}"}
+        print(f"[Kʆɛɓɛʀ] Storage OK {j_id[:8]}")
+    elif j_key:
+        s["autocreate"]={"key":j_key,"endpoint":"https://api.jsonbin.io/v3/b"}
+        print(f"[Kʆɛɓɛʀ] Modo AUTOCREATE - vai criar bin")
+    return s
+
+STORAGES = build_storage_dynamic()
+JSONBIN_ID = STORAGES.get("jsonbin",{}).get("id") or os.getenv("JSONBIN_ID","").strip()
+JSONBIN_KEY = os.getenv("JSONBIN_KEY","").strip()
+DATABASE_PATH = "Orbit.db" # FORÇA FREE SEM /data
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = f"Orbit V17.9 FIX by {KLEBER_SIG}"
+ORBIT_CORE = f"Orbit V21 FREE FIX by {KLEBER_SIG}"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}" if JSONBIN_ID and JSONBIN_KEY else None
+JSONBIN_URL = STORAGES.get("jsonbin",{}).get("endpoint")
 JB_HEADERS = {"X-Master-Key": JSONBIN_KEY, "Content-Type":"application/json"} if JSONBIN_KEY else {}
 WEBHOOK_PATH = "/telegram/webhook"
 
+#... resto das suas variaveis app, executor, etc continuam iguais...
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
 executor = ThreadPoolExecutor(max_workers=6)
@@ -66,42 +86,57 @@ TOXIC_WORDS={"lixo","burro","otario","otário","idiota","fdp","vsf","arrombado",
 DIVULGA_WORDS={"entra","ganhe","lucro","renda","grátis","gratis","promoção","promocao","vagas","dinheiro","pix","aposte","cassino","tigrinho","sorteio"}
 STOP_RULE={"proibido","proibida","proibir","banido","banida","vetado","vetada","nao","não","pode","falar","sobre","fala","de","do","da","no","na","com","para","pra","é","e"}
 
-if "/data" in DATABASE_PATH:
-    try: os.makedirs("/data", exist_ok=True)
-    except: DATABASE_PATH="Orbit.db"
-
 def get_db():
-    try: c=sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=15)
-    except: c=sqlite3.connect("Orbit.db", check_same_thread=False, timeout=15)
+    c=sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=15)
     c.row_factory=sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL;")
     c.execute("PRAGMA synchronous=NORMAL;")
     return c
 
-def restore_safe():
-    if not JSONBIN_URL: return False
+def ensure_bin_and_restore():
+    global STORAGES, JSONBIN_URL, JSONBIN_ID, JB_HEADERS
+    if "jsonbin" in STORAGES:
+        try:
+            cfg=STORAGES["jsonbin"]
+            if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH)>5000:
+                try:
+                    c=sqlite3.connect(DATABASE_PATH); chk=c.execute("PRAGMA quick_check").fetchone(); c.close()
+                    if chk and "ok" in str(chk[0]).lower(): return True
+                except: pass
+            r=requests.get(f"{cfg['endpoint']}/latest", headers={"X-Master-Key": cfg['key']}, timeout=15)
+            if r.status_code==200:
+                rec=r.json().get("record",{}); b64=rec.get("db") or rec.get("db_base64")
+                if b64 and len(b64)>1000:
+                    tmp=DATABASE_PATH+".restore"
+                    with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
+                    shutil.move(tmp,DATABASE_PATH)
+                    print(f"[{KLEBER_SIG}] RESTAURADO {len(b64)}")
+                    return True
+            if r.status_code in (400,404) or "Invalid" in r.text:
+                print(f"[{KLEBER_SIG}] Bin invalido, recriando..."); STORAGES.pop("jsonbin",None)
+        except Exception as e: print(f"Restore fail {e}")
+    # AUTOCREATE
+    key=JSONBIN_KEY
+    if not key: return False
     try:
-        if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH)>5000:
-            try:
-                c=sqlite3.connect(DATABASE_PATH)
-                chk=c.execute("PRAGMA quick_check").fetchone()
-                c.close()
-                if chk and "ok" in str(chk[0]).lower(): return False
-            except: pass
-        r=requests.get(f"{JSONBIN_URL}/latest", headers=JB_HEADERS, timeout=15)
-        if r.status_code!=200: return False
-        rec=r.json().get("record",{})
-        b64=rec.get("db") or rec.get("db_base64")
-        if not b64 or len(b64)<5000: return False
-        tmp=DATABASE_PATH+".restore"
-        with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
-        shutil.move(tmp,DATABASE_PATH)
-        return True
-    except: return False
+        r=requests.post("https://api.jsonbin.io/v3/b", json={"db":"", "by":KLEBER_SIG}, headers={"X-Master-Key": key, "Content-Type":"application/json", "X-Bin-Private":"true"}, timeout=15)
+        if r.status_code in (200,201):
+            new_id=r.json().get("metadata",{}).get("id")
+            if new_id:
+                print(f"[{KLEBER_SIG}] *** NOVO BIN CRIADO {new_id} - COLA NO RENDER COMO JSONBIN_ID ***")
+                STORAGES["jsonbin"]={"id":new_id,"key":key,"endpoint":f"https://api.jsonbin.io/v3/b/{new_id}"}
+                JSONBIN_ID=new_id; JSONBIN_URL=f"https://api.jsonbin.io/v3/b/{new_id}"
+                JB_HEADERS={"X-Master-Key": key, "Content-Type":"application/json"}
+                return True
+    except Exception as e: print(f"Create err {e}")
+    return False
+
+def restore_safe():
+    return ensure_bin_and_restore()
 
 def init_db():
     if not os.path.exists(DATABASE_PATH) or os.path.getsize(DATABASE_PATH)<100:
-        restore_safe()
+        ensure_bin_and_restore()
     c=get_db()
     c.executescript("""
     CREATE TABLE IF NOT EXISTS group_rules(chat_id TEXT PRIMARY KEY,title TEXT,welcome INTEGER DEFAULT 1,goodbye INTEGER DEFAULT 1,welcome_msg TEXT DEFAULT 'Bem-vindo {name}! 🚀',goodbye_msg TEXT DEFAULT '{name} saiu.',anti_link INTEGER DEFAULT 0,anti_spam INTEGER DEFAULT 1,anti_flood INTEGER DEFAULT 1,anti_divulgation INTEGER DEFAULT 1,anti_sensual INTEGER DEFAULT 1,sensual_mode TEXT DEFAULT 'moderate',allowed_links TEXT DEFAULT 'youtube.com,youtu.be,instagram.com,github.com,cloudflare.com',warning_limit INTEGER DEFAULT 3,flood_limit INTEGER DEFAULT 7,flood_window INTEGER DEFAULT 15,mute_duration INTEGER DEFAULT 600,lock_group INTEGER DEFAULT 0,updated_at TEXT);
@@ -118,24 +153,30 @@ def init_db():
     try:
         cols = [r[1] for r in c.execute("PRAGMA table_info(group_rules)").fetchall()]
         if "title" not in cols:
-            c.execute("ALTER TABLE group_rules ADD COLUMN title TEXT")
-            c.commit()
+            c.execute("ALTER TABLE group_rules ADD COLUMN title TEXT"); c.commit()
     except: pass
     c.close()
 init_db()
 
 def force_backup_now():
-    if not JSONBIN_URL: return
+    global last_backup, backup_pending
+    if "jsonbin" not in STORAGES: ensure_bin_and_restore()
+    cfg=STORAGES.get("jsonbin")
+    if not cfg: return
     try:
         with backup_lock:
-            if not os.path.exists(DATABASE_PATH): return
-            if os.path.getsize(DATABASE_PATH)<5000: return
+            if not os.path.exists(DATABASE_PATH) or os.path.getsize(DATABASE_PATH)<5000: return
+            try: c=get_db(); c.execute("PRAGMA wal_checkpoint(FULL);"); c.commit(); c.close()
+            except: pass
             with open(DATABASE_PATH,"rb") as f: b64=base64.b64encode(f.read()).decode()
-            requests.put(JSONBIN_URL,json={"db":b64,"db_base64":b64,"updated":datetime.now(timezone.utc).isoformat(),"by":KLEBER_SIG},headers=JB_HEADERS,timeout=15)
-            global last_backup, backup_pending
-            last_backup=time.time()
-            backup_pending=False
-    except: pass
+            r=requests.put(cfg["endpoint"], json={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"by":KLEBER_SIG}, headers={"X-Master-Key": cfg["key"]}, timeout=20)
+            if r.status_code==200:
+                last_backup=time.time(); backup_pending=False
+                print(f"[{KLEBER_SIG}] BACKUP OK")
+            else:
+                print(f"[{KLEBER_SIG}] BACKUP FAIL {r.text[:200]}")
+                if "Invalid" in r.text: STORAGES.pop("jsonbin",None)
+    except Exception as e: print(f"Backup err {e}")
 
 def telegram_req(method,payload=None):
     url=f"{TELEGRAM_API_URL}/{method}"
