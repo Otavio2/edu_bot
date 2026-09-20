@@ -589,7 +589,7 @@ def handle_private(msg):
             send(chat_id,f"Detectei {len(rules)} regra(s):\n" + "\n".join([f"• {r}" for r in rules]),markup={"inline_keyboard":kb}); return
     send(chat_id,"📚 PV CONFIG - /start pra ver grupos\nCole regras aqui e eu pergunto onde salvar.")
 
- def process_update(update):
+def process_update(update):
     if "my_chat_member" in update:
         ev=update["my_chat_member"]; chat_id=ev["chat"]["id"]; new=ev["new_chat_member"]["status"]; old=ev["old_chat_member"]["status"]
         bot_perm_cache.pop(str(chat_id),None)
