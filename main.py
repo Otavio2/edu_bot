@@ -95,41 +95,37 @@ def get_db():
 
 def ensure_bin_and_restore():
     global STORAGES, JSONBIN_URL, JSONBIN_ID, JB_HEADERS
-    if "jsonbin" in STORAGES:
-        try:
-            cfg=STORAGES["jsonbin"]
-            if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH)>5000:
-                try:
-                    c=sqlite3.connect(DATABASE_PATH); chk=c.execute("PRAGMA quick_check").fetchone(); c.close()
-                    if chk and "ok" in str(chk[0]).lower(): return True
-                except: pass
-            r=requests.get(f"{cfg['endpoint']}/latest", headers={"X-Master-Key": cfg['key']}, timeout=15)
-            if r.status_code==200:
-                rec=r.json().get("record",{}); b64=rec.get("db") or rec.get("db_base64")
-                if b64 and len(b64)>1000:
-                    tmp=DATABASE_PATH+".restore"
-                    with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
-                    shutil.move(tmp,DATABASE_PATH)
-                    print(f"[{KLEBER_SIG}] RESTAURADO {len(b64)}")
-                    return True
-            if r.status_code in (400,404) or "Invalid" in r.text:
-                print(f"[{KLEBER_SIG}] Bin invalido, recriando..."); STORAGES.pop("jsonbin",None)
-        except Exception as e: print(f"Restore fail {e}")
-    # AUTOCREATE
-    key=JSONBIN_KEY
-    if not key: return False
+    if "jsonbin" not in STORAGES:
+        return False
     try:
-        r=requests.post("https://api.jsonbin.io/v3/b", json={"db":"", "by":KLEBER_SIG}, headers={"X-Master-Key": key, "Content-Type":"application/json", "X-Bin-Private":"true"}, timeout=15)
-        if r.status_code in (200,201):
-            new_id=r.json().get("metadata",{}).get("id")
-            if new_id:
-                print(f"[{KLEBER_SIG}] *** NOVO BIN CRIADO {new_id} - COLA NO RENDER COMO JSONBIN_ID ***")
-                STORAGES["jsonbin"]={"id":new_id,"key":key,"endpoint":f"https://api.jsonbin.io/v3/b/{new_id}"}
-                JSONBIN_ID=new_id; JSONBIN_URL=f"https://api.jsonbin.io/v3/b/{new_id}"
-                JB_HEADERS={"X-Master-Key": key, "Content-Type":"application/json"}
+        cfg=STORAGES["jsonbin"]
+        # Se já tem DB local grande, não precisa restaurar
+        if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH)>5000:
+            try:
+                c=sqlite3.connect(DATABASE_PATH); chk=c.execute("PRAGMA quick_check").fetchone(); c.close()
+                if chk and "ok" in str(chk[0]).lower():
+                    print(f"[{KLEBER_SIG}] DB local OK, sem restaurar")
+                    return True
+            except: pass
+
+        r=requests.get(f"{cfg['endpoint']}/latest", headers={"X-Master-Key": cfg['key']}, timeout=15)
+        if r.status_code==200:
+            rec=r.json().get("record",{}); b64=rec.get("db") or rec.get("db_base64")
+            if b64 and len(b64)>1000:
+                tmp=DATABASE_PATH+".restore"
+                with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
+                shutil.move(tmp,DATABASE_PATH)
+                print(f"[{KLEBER_SIG}] RESTAURADO {len(b64)} bytes do bin {cfg['id'][:8]}")
                 return True
-    except Exception as e: print(f"Create err {e}")
-    return False
+            else:
+                print(f"[{KLEBER_SIG}] Bin {cfg['id'][:8]} vazio, vai criar DB local novo e fazer backup depois")
+                return False
+        else:
+            print(f"[{KLEBER_SIG}] Restore status {r.status_code} - mantém bin fixo {cfg['id'][:8]}")
+            return False
+    except Exception as e:
+        print(f"Restore fail {e}")
+        return False
 
 def restore_safe():
     return ensure_bin_and_restore()
