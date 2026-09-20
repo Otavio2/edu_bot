@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V22.4 IA 100% FINAL - BY Kʆɛɓɛʀ
+# ORBIT ALLIANCE V22.6 FIX RENDER FREE - BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, hashlib
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -15,7 +15,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH","/tmp/Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = "Orbit V22.4 IA 100% by Kʆɛɓɛʀ"
+ORBIT_CORE = "Orbit V22.6 FIX by Kʆɛɓɛʀ"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 WEBHOOK_PATH = "/telegram/webhook"
@@ -74,7 +74,9 @@ def init_db():
 init_db()
 
 def ensure_bin_and_restore():
-    if not JSONBIN_KEY: return False
+    if not JSONBIN_KEY:
+        print("SEM JSONBIN_KEY - REGRAS VÃO SUMIR NO RENDER FREE")
+        return False
     if os.path.exists(DATABASE_PATH) and os.path.getsize(DATABASE_PATH)>5000: return True
     try:
         r=get_session().get(f"{JSONBIN_URL}/latest", headers={"X-Master-Key": JSONBIN_KEY}, timeout=15)
@@ -84,9 +86,10 @@ def ensure_bin_and_restore():
                 tmp=DATABASE_PATH+".restore"
                 with open(tmp,"wb") as f: f.write(base64.b64decode(b64))
                 shutil.move(tmp,DATABASE_PATH)
-                print(f"[{KLEBER_SIG}] RESTORED")
+                print(f"[{KLEBER_SIG}] RESTORED OK")
                 return True
-    except: pass
+    except Exception as e:
+        print(f"RESTORE FAIL {e}")
     return False
 
 ensure_bin_and_restore()
@@ -95,15 +98,17 @@ def force_backup_now():
     if not JSONBIN_KEY: return
     with backup_lock:
         try:
-            if os.path.getsize(DATABASE_PATH)<1000: return
+            if not os.path.exists(DATABASE_PATH) or os.path.getsize(DATABASE_PATH)<1000: return
             src=get_db()
             dst=sqlite3.connect("/tmp/bkp.db")
             src.backup(dst)
             src.close()
             dst.close()
             with open("/tmp/bkp.db","rb") as f: b64=base64.b64encode(f.read()).decode()
-            get_session().put(JSONBIN_URL, json={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"v":"V22.4"}, headers={"X-Master-Key": JSONBIN_KEY}, timeout=20)
-        except: pass
+            get_session().put(JSONBIN_URL, json={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"v":"V22.6"}, headers={"X-Master-Key": JSONBIN_KEY}, timeout=20)
+            print("BACKUP OK")
+        except Exception as e:
+            print(f"BACKUP FAIL {e}")
 
 def telegram_req(method,payload=None):
     url=f"{TELEGRAM_API_URL}/{method}"
@@ -242,25 +247,28 @@ def is_allowed_link(text,cfg):
 
 def parse_rules_from_text(text):
     low=text.lower()
-    # Só aceita se tiver gatilho de regra
-    gatilhos = ["proibido","proibida","banido","vetado","regra","não pode","nao pode","proibir","não é permitido","nao é permitido"]
-    if not any(g in low for g in gatilhos):
-        # Se não tem gatilho, só aceita se começar com numero tipo "1. Proibido..."
-        lines_test=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
-        has_number = any(re.match(r"^\d+[\).\s-]", l) for l in lines_test)
-        if not has_number:
+    lines_raw=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
+    if not lines_raw and len(text.strip())>=4: lines_raw=[text.strip()]
+    # Se tem muitas linhas sem gatilho, é musica -> ignora
+    if len(lines_raw) > 4:
+        gatilhos = ["proibido","proibida","banido","vetado","regra","não pode","nao pode","proibir"]
+        if not any(g in low for g in gatilhos):
+            has_num = any(re.match(r"^\d+[\).\s-]", l) for l in lines_raw)
+            if not has_num:
+                return [] # musica detectada
+
+    gatilhos_full = ["proibido","proibida","banido","vetado","regra","não pode","nao pode","proibir","não é permitido","nao é permitido","sem ","não ","nao "]
+    if not any(g in low for g in gatilhos_full):
+        has_num = any(re.match(r"^\d+[\).\s-]", l) for l in lines_raw)
+        if not has_num:
             return []
-    
-    lines=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
-    if not lines and len(text.strip())>=4: lines=[text.strip()]
+
     rules=[]
-    for l in lines:
+    for l in lines_raw:
         if len(l)>250: continue
-        if len(l.split())>=2: 
-            # Remove numero do começo "1. "
-            l_clean = re.sub(r"^\d+[\).\s-]+", "", l).strip()
-            if len(l_clean.split())>=2:
-                rules.append(l_clean[:200])
+        l_clean = re.sub(r"^\d+[\).\s-]+", "", l).strip()
+        if len(l_clean.split())>=2:
+            rules.append(l_clean[:200])
     return rules[:20]
 
 def get_keywords(rule_text):
@@ -684,6 +692,7 @@ def handle_callback(cb):
             c.commit()
             c.close()
         send(chat_id_msg,f"✅ {len(rules)} regra(s) salva(s) em {get_cfg(target_chat).get('title')}!")
+        threading.Thread(target=force_backup_now, daemon=True).start()
     telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"]})
 
 def handle_private(msg):
@@ -821,7 +830,7 @@ def process_update(update):
                 c=get_db()
                 cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
                 c.close()
-            send(chat_id,f"⚙️ PAINEL V22.4 IA 100%\nGrupo: {cfg.get('title')}\nRegras: {cr}/20 | State: {get_bot_permissions(chat_id)['state']}\nMode: {cfg.get('moderation_mode')}",mid,markup=build_config_kb(chat_id))
+            send(chat_id,f"⚙️ PAINEL V22.6 FIX\nGrupo: {cfg.get('title')}\nRegras: {cr}/20 | State: {get_bot_permissions(chat_id)['state']}\nMode: {cfg.get('moderation_mode')}",mid,markup=build_config_kb(chat_id))
             delete_user_cmd()
             return
         if cmd=="/setwelcome" and is_admin(chat_id,uid):
@@ -846,6 +855,7 @@ def process_update(update):
                     c.commit()
                     c.close()
                 send(chat_id,f"✅ Regra {rid} apagada",mid)
+                threading.Thread(target=force_backup_now, daemon=True).start()
             except:
                 send(chat_id,"Use /delregra 2",mid)
             delete_user_cmd()
@@ -857,6 +867,7 @@ def process_update(update):
                 c.commit()
                 c.close()
             send(chat_id,"✅ Resetado",mid)
+            threading.Thread(target=force_backup_now, daemon=True).start()
             delete_user_cmd()
             return
         if cmd=="/ban":
@@ -960,6 +971,7 @@ def process_update(update):
                 c.close()
             send(chat_id,f"✅ {len(rules)} regra(s) salva(s)!",mid)
             execute_action(chat_id,"DELETE",None,mid,"auto del")
+            threading.Thread(target=force_backup_now, daemon=True).start()
             return
         if pend and low in ("nao","não","n","cancelar"):
             with db_lock:
