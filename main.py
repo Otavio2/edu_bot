@@ -19,7 +19,7 @@ def build_storage_dynamic():
     j_id = os.getenv("JSONBIN_ID","").strip()
     j_key = os.getenv("JSONBIN_KEY","").strip()
     # ignora IDs velhos 6aaf...
-    if j_id and j_key and len(j_id)>=20 and not j_id.startswith("6aaf"):
+    if j_id and j_key and len(j_id)>=20:
         s["jsonbin"]={"id":j_id,"key":j_key,"endpoint":f"https://api.jsonbin.io/v3/b/{j_id}"}
         print(f"[Kʆɛɓɛʀ] Storage OK {j_id[:8]}")
     elif j_key:
