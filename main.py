@@ -971,5 +971,7 @@ def process_update(update):
         send(chat_id, aviso)
         return
 
+threading.Thread(target=backup_worker, daemon=True).start()
+
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=PORT)
