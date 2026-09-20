@@ -719,10 +719,17 @@ def process_update(update):
             return
         if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM pode usar",mid); return
         if cmd=="/delregra":
-            try: rid=int(parts[1]);
-                with db_lock: c=get_db(); c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(str(chat_id),rid)); c.commit(); c.close()
+            try:
+                rid=int(parts[1])
+                with db_lock:
+                    c=get_db()
+                    c.execute("DELETE FROM custom_rules WHERE chat_id=? AND id=?",(str(chat_id),rid))
+                    c.commit()
+                    c.close()
                 send(chat_id,f"✅ Regra {rid} apagada",mid)
-            except: send(chat_id,"Use /delregra 2",mid); return
+            except:
+                send(chat_id,"Use /delregra 2",mid)
+            return
         if cmd=="/resetregras":
             with db_lock: c=get_db(); c.execute("DELETE FROM custom_rules WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close(); send(chat_id,"✅ Resetado",mid); return
         if cmd=="/ban":
