@@ -1,4 +1,4 @@
-# ORBIT ALLIANCE V22.2 HARDENED FIX 100% - BY Kʆɛɓɛʀ
+# ORBIT ALLIANCE V22.4 IA 100% FINAL - BY Kʆɛɓɛʀ
 import os, re, json, time, sqlite3, logging, requests, base64, shutil, threading, hashlib
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, deque
@@ -15,7 +15,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH","/tmp/Orbit.db")
 PORT = int(os.getenv("PORT",10000))
 
 KLEBER_SIG = "Kʆɛɓɛʀ"
-ORBIT_CORE = "Orbit V22.2 HARDENED FIX 100% by Kʆɛɓɛʀ"
+ORBIT_CORE = "Orbit V22.4 IA 100% by Kʆɛɓɛʀ"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 JSONBIN_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_ID}"
 WEBHOOK_PATH = "/telegram/webhook"
@@ -32,6 +32,7 @@ mem_join = defaultdict(lambda: deque(maxlen=15))
 admin_cache = {}
 bot_perm_cache = {}
 provider_health = defaultdict(lambda: {"fail":0,"until":0})
+last_welcome_msg = {}
 backup_pending = False
 last_backup = 0
 BOT_ID = None
@@ -101,7 +102,7 @@ def force_backup_now():
             src.close()
             dst.close()
             with open("/tmp/bkp.db","rb") as f: b64=base64.b64encode(f.read()).decode()
-            get_session().put(JSONBIN_URL, json={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"v":"V22.2"}, headers={"X-Master-Key": JSONBIN_KEY}, timeout=20)
+            get_session().put(JSONBIN_URL, json={"db":b64,"updated":datetime.now(timezone.utc).isoformat(),"v":"V22.4"}, headers={"X-Master-Key": JSONBIN_KEY}, timeout=20)
         except: pass
 
 def telegram_req(method,payload=None):
@@ -134,24 +135,23 @@ def init_bot():
 init_bot()
 
 def send(chat_id,txt,reply=None,markup=None):
-    if markup:
-        return telegram_req("sendMessage",{"chat_id":chat_id,"text":str(txt)[:3900],"reply_to_message_id":reply,"reply_markup":markup})
-    return telegram_req("sendMessage",{"chat_id":chat_id,"text":str(txt)[:3900]})
+    payload={"chat_id":chat_id,"text":str(txt)[:3900]}
+    if reply: payload["reply_to_message_id"]=reply
+    if markup: payload["reply_markup"]=markup
+    res=telegram_req("sendMessage",payload)
+    return res
 
 def get_cfg(chat_id):
     with chat_locks[str(chat_id)]:
         with db_lock:
             c=get_db()
             r=c.execute("SELECT * FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone()
-            c.close()
-        if not r:
-            with db_lock:
-                c=get_db()
+            if not r:
                 c.execute("INSERT OR IGNORE INTO group_rules(chat_id,updated_at) VALUES(?,?)",(str(chat_id),datetime.now(timezone.utc).isoformat()))
                 c.commit()
-                c.close()
-            return get_cfg(chat_id)
-        return dict(r)
+                r=c.execute("SELECT * FROM group_rules WHERE chat_id=?",(str(chat_id),)).fetchone()
+            c.close()
+            return dict(r) if r else {"chat_id":str(chat_id),"welcome":1,"anti_link":1,"anti_spam":1,"anti_flood":1,"anti_divulgation":1,"anti_sensual":1,"warning_limit":3,"flood_limit":7,"flood_window":15,"mute_duration":600,"lock_group":0,"moderation_mode":"moderate","title":"Grupo"}
 
 def set_cfg(chat_id,key,val):
     global backup_pending
@@ -216,6 +216,7 @@ def wipe_group_data(chat_id):
         for k in list(mem_flood.keys()):
             if k[0]==str(chat_id): del mem_flood[k]
         mem_join.pop(str(chat_id),None)
+        last_welcome_msg.pop(str(chat_id),None)
         threading.Thread(target=force_backup_now, daemon=True).start()
     except: pass
 
@@ -240,18 +241,17 @@ def is_allowed_link(text,cfg):
     return True
 
 def parse_rules_from_text(text):
-    lines=[l.strip() for l in text.splitlines() if len(l.strip())>=5]
-    if not lines and len(text.strip())>=8: lines=[text.strip()]
+    lines=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
+    if not lines and len(text.strip())>=4: lines=[text.strip()]
     rules=[]
     for l in lines:
         if len(l)>250: continue
-        low=l.lower()
-        if low.startswith("proibido") or low.startswith("banido") or "proibido" in low[:25]: rules.append(l[:200])
+        if len(l.split())>=2: rules.append(l[:200])
     return rules[:20]
 
 def get_keywords(rule_text):
     words=re.findall(r"\w{4,}",rule_text.lower())
-    STOP_RULE={"proibido","proibida","proibir","banido","banida","vetado","vetada","nao","não","pode","falar","sobre","fala","de","do","da","no","na","com","para","pra","é","e"}
+    STOP_RULE={"proibido","proibida","proibir","banido","banida","vetado","vetada","nao","não","pode","falar","sobre","fala","de","do","da","no","na","com","para","pra","é","e","o","a","os","as"}
     kws=[w for w in words if w not in STOP_RULE][:6]
     if not kws: return rule_text.lower()[:20]
     pattern=r"(?i)\b(" + "|".join([re.escape(k) for k in kws]) + r")\b"
@@ -268,58 +268,9 @@ def check_custom_rules(text,chat_id):
             if r["regex"] and re.search(r["regex"], text, re.I): return dict(r)
             if r["keywords"]:
                 for k in r["keywords"].split(","):
-                    if len(k.strip())>=4 and re.search(rf"\b{re.escape(k.strip())}\b", text, re.I): return dict(r)
+                    if len(k.strip())>=3 and re.search(rf"\b{re.escape(k.strip())}\b", text, re.I): return dict(r)
         except: continue
     return None
-
-def handle_custom_violation(chat_id,user_id,rule,message_id, user_name=""):
-    rule_id=rule["id"]
-    with db_lock:
-        c=get_db()
-        row=c.execute("SELECT count FROM user_rule_hits WHERE chat_id=? AND user_id=? AND rule_id=?",(str(chat_id),str(user_id),rule_id)).fetchone()
-        cnt=(row["count"] if row else 0)+1
-        c.execute("INSERT OR REPLACE INTO user_rule_hits(chat_id,user_id,rule_id,count,last_at) VALUES(?,?,?,?,?)",(str(chat_id),str(user_id),rule_id,cnt,datetime.now(timezone.utc).isoformat()))
-        c.commit()
-        c.close()
-    global backup_pending
-    backup_pending=True
-    execute_action(chat_id,"DELETE",None,message_id,f"regra: {rule['rule_text']}")
-    if cnt==1: send(chat_id, gerar_aviso_ia(user_name or "amigo", f'regra: {rule["rule_text"]}', rule["rule_text"]), message_id)
-    elif cnt==2: execute_action(chat_id,"WARN",user_id,None,f"regra: {rule['rule_text']}")
-    else: execute_action(chat_id,"MUTE",user_id,None,f"reincidente {rule['rule_text']}")
-
-class Decision:
-    def __init__(self, action="NONE", reason="", confidence=0, score=0):
-        self.action=action
-        self.reason=reason
-        self.confidence=confidence
-        self.score=score
-
-def decision_engine(event_type, text, cfg, ai_res, custom_hit, flood_info):
-    mode=cfg.get("moderation_mode","moderate")
-    if mode=="observer": return Decision("LOG", "observer", 1.0, 0)
-    conf_threshold = 0.7
-    if mode=="strict": conf_threshold=0.55
-    elif mode=="auto": conf_threshold=0.75
-    if custom_hit:
-        cnt=custom_hit.get("hits",1)
-        if cnt==1: return Decision("DELETE_WARN", f"regra: {custom_hit['rule_text']}", 0.95, 1.0)
-        if cnt>=3: return Decision("MUTE", f"reincidente {custom_hit['rule_text']}", 0.95, 1.0)
-        return Decision("WARN", f"regra: {custom_hit['rule_text']}", 0.95, 1.0)
-    if flood_info and flood_info["is_flood"] and cfg.get("anti_flood"): return Decision("MUTE","flood",0.9,0.9)
-    if check_anti_mention(text,cfg): return Decision("DELETE","anti mention spam",0.9,0.9)
-    if cfg.get("anti_link") and not is_allowed_link(text,cfg): return Decision("DELETE","link não permitido",0.9,0.9)
-    if ai_res:
-        conf=ai_res.get("confidence",0.6)
-        if conf < conf_threshold: return Decision("NONE","low conf",conf,0)
-        if float(ai_res.get("divulg",0))>=0.8 and cfg.get("anti_divulgation"):
-            if not is_allowed_link(text,cfg): return Decision("DELETE", f"divulg {ai_res['divulg']:.2f}", conf, ai_res['divulg'])
-        if float(ai_res.get("toxic",0))>=0.85:
-            if mode=="strict": return Decision("MUTE", f"toxic {ai_res['toxic']:.2f}", conf, ai_res['toxic'])
-            return Decision("DELETE", f"toxic {ai_res['toxic']:.2f}", conf, ai_res['toxic'])
-        if float(ai_res.get("sensual",0))>=0.85 and cfg.get("anti_sensual"): return Decision("DELETE", f"+18", conf, ai_res['sensual'])
-        if float(ai_res.get("spam",0))>=0.8 and cfg.get("anti_spam"): return Decision("DELETE","spam IA",conf,ai_res['spam'])
-    return Decision("NONE","",0,0)
 
 PROVIDERS_RAW = {
     "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1/chat/completions", "format": "openai", "model": "llama-3.1-8b-instant"},
@@ -371,7 +322,9 @@ def call_moderation_ai(text):
             j=json.loads(m.group())
             out={}
             for k in ["toxic","divulg","sensual","confidence","spam"]:
-                try: v=float(j.get(k,base.get(k,0))); out[k]=max(0,min(1,v))
+                try:
+                    v=float(j.get(k,base.get(k,0)))
+                    out[k]=max(0,min(1,v))
                 except: out[k]=base.get(k,0)
             if not (0<=out["confidence"]<=1): out["confidence"]=0.6
             out["toxic"]=max(out["toxic"],ht); out["divulg"]=max(out["divulg"],hd); out["sensual"]=max(out["sensual"],hs)
@@ -383,19 +336,86 @@ def call_moderation_ai(text):
             continue
     return base
 
-def gerar_aviso_ia(nome, motivo, texto_original):
-    if not PROVIDERS: return f"⚠️ {nome}, isso não pode aqui. ({motivo})"
-    prompt=f"Moderadora Orbit, direta. Usuario {nome} bloqueado por {motivo}. Aviso curto 1 frase max 18 palavras PT-BR informal."
+def gerar_aviso_ia(nome, motivo, texto_original, nivel=1):
+    if not PROVIDERS: return None
+    if nivel == 1:
+        prompt = f"Você é Orbit, moderadora carismática. Usuário {nome} quebrou a regra: {motivo}. Texto: {texto_original[:100]}. Explique o motivo, curta max 20 palavras, PT-BR. 1ª advertência."
+    elif nivel == 2:
+        prompt = f"Você é Orbit. {nome} reincidiu na regra: {motivo}. Segunda vez. Diga que próxima é mute de 10 minutos, firme, max 22 palavras, PT-BR."
+    elif nivel == 3:
+        prompt = f"Você é Orbit. {nome} foi mutado por 10 minutos por: {motivo}. Explique motivo e tempo 10min, firme e inteligente, max 25 palavras, PT-BR, emoji."
+    else:
+        prompt = f"Você é Orbit. {nome} foi {motivo}. Explique de forma firme, inteligente, max 25 palavras, PT-BR, com emoji. Decisão ADM."
     for prov in ORDER_PREFERENCE:
         if prov not in PROVIDERS: continue
-        cfg=PROVIDERS[prov]
+        cfgp=PROVIDERS[prov]
         try:
             sess=get_session()
-            if cfg["format"]=="openai":
-                r=sess.post(cfg["endpoint"],json={"model":cfg["model"],"messages":[{"role":"user","content":prompt}],"temperature":0.85,"max_tokens":60},headers={"Authorization":f"Bearer {cfg['key']}"},timeout=5)
-                if r.status_code==200: return r.json()["choices"][0]["message"]["content"][:190]
+            if cfgp["format"]=="openai":
+                r=sess.post(cfgp["endpoint"], json={"model":cfgp["model"],"messages":[{"role":"system","content":"Você é moderadora inteligente, carismática, direta."},{"role":"user","content":prompt}],"temperature":0.9,"max_tokens":80}, headers={"Authorization":f"Bearer {cfgp['key']}"}, timeout=5)
+                if r.status_code==200:
+                    txt=r.json()["choices"][0]["message"]["content"].strip()[:250]
+                    if len(txt)>=5: return txt
         except: continue
-    return f"⚠️ {nome}, isso não pode aqui. ({motivo})"
+    return None
+
+def handle_custom_violation(chat_id,user_id,rule,message_id, user_name=""):
+    rule_id=rule["id"]
+    with db_lock:
+        c=get_db()
+        row=c.execute("SELECT count FROM user_rule_hits WHERE chat_id=? AND user_id=? AND rule_id=?",(str(chat_id),str(user_id),rule_id)).fetchone()
+        cnt=(row["count"] if row else 0)+1
+        c.execute("INSERT OR REPLACE INTO user_rule_hits(chat_id,user_id,rule_id,count,last_at) VALUES(?,?,?,?,?)",(str(chat_id),str(user_id),rule_id,cnt,datetime.now(timezone.utc).isoformat()))
+        c.commit()
+        c.close()
+    global backup_pending
+    backup_pending=True
+    execute_action(chat_id,"DELETE",None,message_id,f"regra: {rule['rule_text']}")
+    nome=user_name or "amigo"
+    if cnt==1:
+        msg_ia=gerar_aviso_ia(nome, rule['rule_text'], rule['rule_text'], nivel=1)
+        if msg_ia: send(chat_id, msg_ia, message_id)
+    elif cnt==2:
+        msg_ia=gerar_aviso_ia(nome, rule['rule_text'], rule['rule_text'], nivel=2)
+        if msg_ia: send(chat_id, msg_ia, message_id)
+        execute_action(chat_id,"WARN",user_id,None,f"regra: {rule['rule_text']}")
+    else:
+        msg_ia=gerar_aviso_ia(nome, rule['rule_text'], rule['rule_text'], nivel=3)
+        if msg_ia: send(chat_id, msg_ia, message_id)
+        execute_action(chat_id,"MUTE",user_id,None,f"reincidente {rule['rule_text']}")
+
+class Decision:
+    def __init__(self, action="NONE", reason="", confidence=0, score=0):
+        self.action=action
+        self.reason=reason
+        self.confidence=confidence
+        self.score=score
+
+def decision_engine(event_type, text, cfg, ai_res, custom_hit, flood_info):
+    mode=cfg.get("moderation_mode","moderate")
+    if mode=="observer": return Decision("LOG", "observer", 1.0, 0)
+    conf_threshold = 0.7
+    if mode=="strict": conf_threshold=0.55
+    elif mode=="auto": conf_threshold=0.75
+    if custom_hit:
+        cnt=custom_hit.get("hits",1)
+        if cnt==1: return Decision("DELETE_WARN", f"regra: {custom_hit['rule_text']}", 0.95, 1.0)
+        if cnt>=3: return Decision("MUTE", f"reincidente {custom_hit['rule_text']}", 0.95, 1.0)
+        return Decision("WARN", f"regra: {custom_hit['rule_text']}", 0.95, 1.0)
+    if flood_info and flood_info["is_flood"] and cfg.get("anti_flood"): return Decision("MUTE","flood",0.9,0.9)
+    if check_anti_mention(text,cfg): return Decision("DELETE","anti mention spam",0.9,0.9)
+    if cfg.get("anti_link") and not is_allowed_link(text,cfg): return Decision("DELETE","link não permitido",0.9,0.9)
+    if ai_res:
+        conf=ai_res.get("confidence",0.6)
+        if conf < conf_threshold: return Decision("NONE","low conf",conf,0)
+        if float(ai_res.get("divulg",0))>=0.8 and cfg.get("anti_divulgation"):
+            if not is_allowed_link(text,cfg): return Decision("DELETE", f"divulg {ai_res['divulg']:.2f}", conf, ai_res['divulg'])
+        if float(ai_res.get("toxic",0))>=0.85:
+            if mode=="strict": return Decision("MUTE", f"toxic {ai_res['toxic']:.2f}", conf, ai_res['toxic'])
+            return Decision("DELETE", f"toxic {ai_res['toxic']:.2f}", conf, ai_res['toxic'])
+        if float(ai_res.get("sensual",0))>=0.85 and cfg.get("anti_sensual"): return Decision("DELETE", f"+18", conf, ai_res['sensual'])
+        if float(ai_res.get("spam",0))>=0.8 and cfg.get("anti_spam"): return Decision("DELETE","spam IA",conf,ai_res['spam'])
+    return Decision("NONE","",0,0)
 
 def do_telegram_action(chat_id,action,target_id,message_id,reason):
     try:
@@ -527,7 +547,8 @@ def health():
             pend=c.execute("SELECT COUNT(*) FROM action_outbox WHERE status='pending'").fetchone()[0]
             failed=c.execute("SELECT COUNT(*) FROM action_outbox WHERE status='failed'").fetchone()[0]
             logs=c.execute("SELECT COUNT(*) FROM moderation_logs").fetchone()[0]
-        except: groups=0; pend=0; failed=0; logs=0
+        except:
+            groups=0; pend=0; failed=0; logs=0
         c.close()
     perms_state = "UNKNOWN"
     if bot_perm_cache:
@@ -543,7 +564,8 @@ def get_admin_groups_for_user(user_id):
     admin_groups=[]
     def check_one(g):
         try:
-            cid=str(g["chat_id"]); t=g["title"] or "Grupo"
+            cid=str(g["chat_id"])
+            t=g["title"] or "Grupo"
             if is_admin(cid,user_id): return {"chat_id":cid,"title":t}
         except: return None
     with ThreadPoolExecutor(max_workers=5) as ex:
@@ -567,28 +589,42 @@ def build_config_kb(chat_id):
     ]}
 
 def handle_callback(cb):
-    uid=str(cb["from"]["id"]); data=cb.get("data",""); chat_id_msg=cb["message"]["chat"]["id"]; mid=cb["message"]["message_id"]
+    uid=str(cb["from"]["id"])
+    data=cb.get("data","")
+    chat_id_msg=cb["message"]["chat"]["id"]
+    mid=cb["message"]["message_id"]
     parts=data.split("|")
     if len(parts)<2: return
-    action=parts[0]; target_chat=parts[1]
+    action=parts[0]
+    target_chat=parts[1]
     h=hashlib.sha256(f"cb:{cb['id']}".encode()).hexdigest()
     with db_lock:
         c=get_db()
-        if c.execute("SELECT 1 FROM processed_actions WHERE action_hash=?",(h,)).fetchone(): c.close(); return
-        try: c.execute("INSERT INTO processed_actions VALUES(?,?)",(h,datetime.now(timezone.utc).isoformat())); c.commit()
+        if c.execute("SELECT 1 FROM processed_actions WHERE action_hash=?",(h,)).fetchone():
+            c.close()
+            return
+        try:
+            c.execute("INSERT INTO processed_actions VALUES(?,?)",(h,datetime.now(timezone.utc).isoformat()))
+            c.commit()
         except: pass
         c.close()
     if not is_admin(target_chat,uid):
-        telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Você não é ADM desse grupo","show_alert":True}); return
+        telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Você não é ADM desse grupo","show_alert":True})
+        return
     if action=="cfg":
-        key=parts[2]; cfg=get_cfg(target_chat); new_val=0 if cfg.get(key) else 1
+        key=parts[2]
+        cfg=get_cfg(target_chat)
+        new_val=0 if cfg.get(key) else 1
         set_cfg(target_chat,key,new_val)
         telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":f"{key}={'ON' if new_val else 'OFF'}"})
         try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
-        except: pass; return
+        except: pass
+        return
     if action=="lock":
         perms=get_bot_permissions(target_chat)
-        if not perms["can_restrict"]: telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Sem permissão para trancar","show_alert":True}); return
+        if not perms["can_restrict"]:
+            telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Sem permissão para trancar","show_alert":True})
+            return
         cfg=get_cfg(target_chat)
         if cfg.get("lock_group"):
             set_cfg(target_chat,"lock_group",0)
@@ -599,34 +635,48 @@ def handle_callback(cb):
             execute_action(target_chat,"LOCK",None,None,"lock via painel")
             telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"],"text":"Trancado"})
         try: telegram_req("editMessageReplyMarkup",{"chat_id":chat_id_msg,"message_id":mid,"reply_markup":build_config_kb(target_chat)})
-        except: pass; return
+        except: pass
+        return
     if action=="regras":
         with db_lock:
-            c=get_db(); rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(target_chat,)).fetchall(); c.close()
+            c=get_db()
+            rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(target_chat,)).fetchall()
+            c.close()
         if not rows: send(chat_id_msg,f"📭 Nenhuma regra em {get_cfg(target_chat).get('title')}")
         else: send(chat_id_msg,f"📜 Regras ({len(rows)}/20):\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows]))
     elif action=="painel":
         cfg=get_cfg(target_chat)
         with db_lock:
-            c=get_db(); cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(target_chat,)).fetchone()["c"]; c.close()
+            c=get_db()
+            cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(target_chat,)).fetchone()["c"]
+            c.close()
         txt=f"⚙️ Painel {cfg.get('title')}\nMode:{cfg.get('moderation_mode')} State:{get_bot_permissions(target_chat)['state']}\nRegras: {cr}/20 | Lock: {'ON' if cfg.get('lock_group') else 'OFF'}"
         telegram_req("editMessageText",{"chat_id":chat_id_msg,"message_id":mid,"text":txt,"reply_markup":build_config_kb(target_chat)})
     elif action=="salvar":
         with db_lock:
-            c=get_db(); pend=c.execute("SELECT rules_json FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)).fetchone(); c.close()
+            c=get_db()
+            pend=c.execute("SELECT rules_json FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)).fetchone()
+            c.close()
         if not pend: send(chat_id_msg,"Nenhuma pendente"); return
-        data=json.loads(pend["rules_json"]); rules=data.get("rules", data if isinstance(data,list) else [])
+        data=json.loads(pend["rules_json"])
+        rules=data.get("rules", data if isinstance(data,list) else [])
         with db_lock:
             c=get_db()
             for rtxt in rules:
-                kw=get_keywords(rtxt); pat=getattr(get_keywords,"last_regex",None)
+                kw=get_keywords(rtxt)
+                pat=getattr(get_keywords,"last_regex",None)
                 c.execute("INSERT INTO custom_rules(chat_id,rule_text,keywords,regex,created_by,created_at) VALUES(?,?,?,?,?,?)",(target_chat,rtxt,kw,pat,uid,datetime.now(timezone.utc).isoformat()))
-            c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid)); c.commit(); c.close()
+            c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(f"PV_{uid}",uid))
+            c.commit()
+            c.close()
         send(chat_id_msg,f"✅ {len(rules)} regra(s) salva(s) em {get_cfg(target_chat).get('title')}!")
     telegram_req("answerCallbackQuery",{"callback_query_id":cb["id"]})
 
 def handle_private(msg):
-    chat_id=msg["chat"]["id"]; uid=msg["from"]["id"]; text=(msg.get("text","") or "").strip(); low=text.lower()
+    chat_id=msg["chat"]["id"]
+    uid=msg["from"]["id"]
+    text=(msg.get("text","") or "").strip()
+    low=text.lower()
     if low in ["/start","/meusgrupos","/grupos","/painel"]:
         send(chat_id,"🔍 Buscando seus grupos...")
         def do_search():
@@ -636,88 +686,143 @@ def handle_private(msg):
             for g in groups:
                 markup={"inline_keyboard":[[{"text":f"📌 {g['title'][:30]}","callback_data":f"painel|{g['chat_id']}"}],[{"text":"📜 Ver Regras","callback_data":f"regras|{g['chat_id']}"},{"text":"⚙️ Painel","callback_data":f"painel|{g['chat_id']}"}]]}
                 send(chat_id,f"👇 {g['title']}",markup=markup)
-        threading.Thread(target=do_search, daemon=True).start(); return
+        threading.Thread(target=do_search, daemon=True).start()
+        return
     if len(text)>=5 and not text.startswith("/"):
         rules=parse_rules_from_text(text)
         if rules:
             groups=get_admin_groups_for_user(uid)
             if not groups: send(chat_id,"📭 Sem grupos."); return
             with db_lock:
-                c=get_db(); c.execute("INSERT OR REPLACE INTO pending_rules VALUES(?,?,?,?)",(f"PV_{uid}",str(uid),json.dumps({"rules":rules,"groups":[g['chat_id'] for g in groups]}),datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
+                c=get_db()
+                c.execute("INSERT OR REPLACE INTO pending_rules VALUES(?,?,?,?)",(f"PV_{uid}",str(uid),json.dumps({"rules":rules,"groups":[g['chat_id'] for g in groups]}),datetime.now(timezone.utc).isoformat()))
+                c.commit()
+                c.close()
             kb=[]
             for g in groups[:10]: kb.append([{"text":f"💾 {g['title'][:25]}","callback_data":f"salvar|{g['chat_id']}"}])
-            send(chat_id,f"Detectei {len(rules)} regra(s):\n" + "\n".join([f"• {r}" for r in rules]),markup={"inline_keyboard":kb}); return
+            send(chat_id,f"Detectei {len(rules)} regra(s):\n" + "\n".join([f"• {r}" for r in rules]),markup={"inline_keyboard":kb})
+            return
     send(chat_id,"📚 PV CONFIG - /start pra ver grupos\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
     if "my_chat_member" in update:
-        ev=update["my_chat_member"]; chat_id=ev["chat"]["id"]; new=ev["new_chat_member"]["status"]
+        ev=update["my_chat_member"]
+        chat_id=ev["chat"]["id"]
+        new=ev["new_chat_member"]["status"]
         bot_perm_cache.pop(str(chat_id),None)
         if new in ("kicked","left"):
             threading.Thread(target=wipe_group_data, args=(chat_id,), daemon=True).start()
             with db_lock:
-                c=get_db(); c.execute("INSERT OR REPLACE INTO bot_permissions VALUES(?,?,?,?,?,?)",(str(chat_id),0,0,0,datetime.now(timezone.utc).isoformat(),"OFFLINE")); c.commit(); c.close()
+                c=get_db()
+                c.execute("INSERT OR REPLACE INTO bot_permissions VALUES(?,?,?,?,?,?)",(str(chat_id),0,0,0,datetime.now(timezone.utc).isoformat(),"OFFLINE"))
+                c.commit()
+                c.close()
         elif new=="member":
             with db_lock:
-                c=get_db(); c.execute("INSERT OR REPLACE INTO bot_permissions VALUES(?,?,?,?,?,?)",(str(chat_id),0,0,0,datetime.now(timezone.utc).isoformat(),"DEGRADED")); c.commit(); c.close()
+                c=get_db()
+                c.execute("INSERT OR REPLACE INTO bot_permissions VALUES(?,?,?,?,?,?)",(str(chat_id),0,0,0,datetime.now(timezone.utc).isoformat(),"DEGRADED"))
+                c.commit()
+                c.close()
         else:
             get_bot_permissions(chat_id)
         return
     if "chat_member" in update:
-        ev=update["chat_member"]; chat_id=ev["chat"]["id"]; user_id=ev["new_chat_member"]["user"]["id"]
+        ev=update["chat_member"]
+        chat_id=ev["chat"]["id"]
+        user_id=ev["new_chat_member"]["user"]["id"]
         admin_cache.pop(f"{chat_id}_{user_id}",None)
         return
-    if "callback_query" in update: handle_callback(update["callback_query"]); return
+    if "callback_query" in update:
+        handle_callback(update["callback_query"])
+        return
     msg=update.get("message") or update.get("edited_message")
     is_edited="edited_message" in update
     if not msg: return
-    if msg["chat"]["type"]=="private": handle_private(msg); return
-    chat_id=msg["chat"]["id"]; uid=msg["from"]["id"]; text=(msg.get("text","") or msg.get("caption","")).strip(); mid=msg["message_id"]
+    if msg["chat"]["type"]=="private":
+        handle_private(msg)
+        return
+    chat_id=msg["chat"]["id"]
+    uid=msg["from"]["id"]
+    text=(msg.get("text","") or msg.get("caption","")).strip()
+    mid=msg["message_id"]
+
+    def delete_user_cmd():
+        try:
+            if text.startswith("/"):
+                threading.Timer(2, lambda: execute_action(chat_id,"DELETE",None,mid,"auto del cmd")).start()
+        except: pass
+
     cfg=get_cfg(chat_id)
     if is_edited and not cfg.get("anti_spam"): return
     try:
         title=msg["chat"].get("title")
         if title and title!=cfg.get("title"): set_cfg(chat_id,"title",title)
     except: pass
+
     if "new_chat_members" in msg:
-        now=time.time(); dq=mem_join[str(chat_id)]; dq.append(now)
+        now=time.time()
+        dq=mem_join[str(chat_id)]
+        dq.append(now)
         while dq and now-dq[0]>15: dq.popleft()
         if len(dq)>=6 and cfg.get("moderation_mode")!="observer":
             if get_bot_permissions(chat_id)["can_restrict"]:
                 set_cfg(chat_id,"lock_group",1)
-                execute_action(chat_id,"LOCK",None,None,f"anti-raid {len(dq)} joins")
-                send(chat_id,f"🚨 Anti-raid: {len(dq)} joins em 15s - grupo trancado automaticamente")
+                execute_action(chat_id,"LOCK",None,None,f"anti-raid {len(dq)}")
+                send(chat_id,f"🚨 Anti-raid: {len(dq)} joins em 15s - trancado")
         if cfg.get("welcome"):
+            last_id = last_welcome_msg.get(str(chat_id))
+            if last_id:
+                execute_action(chat_id,"DELETE",None,last_id,"clean welcome")
             for u in msg["new_chat_members"]:
                 if str(u.get("id"))==str(BOT_ID): continue
                 txt=cfg.get("welcome_msg","Bem-vindo {name}! 🚀").replace("{name}",u.get("first_name","")).replace("{group}",msg["chat"].get("title","grupo"))
-                send(chat_id,txt)
+                res=send(chat_id,txt)
+                if res.get("ok"):
+                    last_welcome_msg[str(chat_id)]=res["result"]["message_id"]
         return
     if "left_chat_member" in msg:
         left=msg["left_chat_member"]
-        if str(left.get("id"))==str(BOT_ID): threading.Thread(target=wipe_group_data, args=(chat_id,), daemon=True).start(); return
+        if str(left.get("id"))==str(BOT_ID):
+            threading.Thread(target=wipe_group_data, args=(chat_id,), daemon=True).start()
+            return
         if cfg.get("goodbye"):
             txt=cfg.get("goodbye_msg","{name} saiu.").replace("{name}",left.get("first_name","Alguem")).replace("{group}",msg["chat"].get("title","grupo"))
             send(chat_id,txt)
         return
     if text.startswith("/"):
-        parts=text.split(); cmd=parts[0].lower().split("@")[0]
+        parts=text.split()
+        cmd=parts[0].lower().split("@")[0]
+
         if cmd in ["/regras","/listregras"]:
             with db_lock:
-                c=get_db(); rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(str(chat_id),)).fetchall(); c.close()
+                c=get_db()
+                rows=c.execute("SELECT id,rule_text FROM custom_rules WHERE chat_id=? ORDER BY id",(str(chat_id),)).fetchall()
+                c.close()
             if not rows: send(chat_id,"📭 Nenhuma regra",mid)
             else: send(chat_id,"📜 Regras:\n" + "\n".join([f"{r['id']}. {r['rule_text']}" for r in rows]),mid)
+            delete_user_cmd()
             return
         if cmd in ["/painel","/start","/help","/status"]:
             with db_lock:
-                c=get_db(); cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]; c.close()
-            send(chat_id,f"⚙️ PAINEL V22.2\nGrupo: {cfg.get('title')}\nRegras: {cr}/20 | State: {get_bot_permissions(chat_id)['state']}\nMode: {cfg.get('moderation_mode')}",mid,markup=build_config_kb(chat_id)); return
+                c=get_db()
+                cr=c.execute("SELECT COUNT(*) as c FROM custom_rules WHERE chat_id=?",(str(chat_id),)).fetchone()["c"]
+                c.close()
+            send(chat_id,f"⚙️ PAINEL V22.4 IA 100%\nGrupo: {cfg.get('title')}\nRegras: {cr}/20 | State: {get_bot_permissions(chat_id)['state']}\nMode: {cfg.get('moderation_mode')}",mid,markup=build_config_kb(chat_id))
+            delete_user_cmd()
+            return
         if cmd=="/setwelcome" and is_admin(chat_id,uid):
             welcome_text=text.replace("/setwelcome","").replace(f"@{BOT_USERNAME}","").strip()
-            if welcome_text: set_cfg(chat_id,"welcome_msg",welcome_text); send(chat_id,f"✅ Welcome: {welcome_text}",mid)
-            else: send(chat_id,"Use: /setwelcome Bem vindo {name}!",mid)
+            if len(welcome_text)>=3 and len(welcome_text)<=300:
+                set_cfg(chat_id,"welcome_msg",welcome_text)
+                send(chat_id,f"✅ Welcome: {welcome_text}",mid)
+            else:
+                send(chat_id,"Use: /setwelcome Bem vindo {name}!",mid)
+            delete_user_cmd()
             return
-        if not is_admin(chat_id,uid): send(chat_id,"⚠️ Só ADM pode usar",mid); return
+        if not is_admin(chat_id,uid):
+            send(chat_id,"⚠️ Só ADM pode usar",mid)
+            delete_user_cmd()
+            return
         if cmd=="/delregra":
             try:
                 rid=int(parts[1])
@@ -729,60 +834,102 @@ def process_update(update):
                 send(chat_id,f"✅ Regra {rid} apagada",mid)
             except:
                 send(chat_id,"Use /delregra 2",mid)
+            delete_user_cmd()
             return
         if cmd=="/resetregras":
-            with db_lock: c=get_db(); c.execute("DELETE FROM custom_rules WHERE chat_id=?",(str(chat_id),)); c.commit(); c.close(); send(chat_id,"✅ Resetado",mid); return
+            with db_lock:
+                c=get_db()
+                c.execute("DELETE FROM custom_rules WHERE chat_id=?",(str(chat_id),))
+                c.commit()
+                c.close()
+            send(chat_id,"✅ Resetado",mid)
+            delete_user_cmd()
+            return
         if cmd=="/ban":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            tgt_name=msg.get("reply_to_message",{}).get("from",{}).get("first_name","usuário")
             if tgt:
                 r=execute_action(chat_id,"BAN",tgt,None,"ban ADM")
-                send(chat_id,"🚫 Banido" if r["success"] else f"❌ Falha",mid); return
+                if r["success"]:
+                    txt_ia=gerar_aviso_ia(tgt_name, "banido por ADM", "ban", nivel=4)
+                    send(chat_id, txt_ia if txt_ia else f"🚫 {tgt_name} banido.", mid)
+                else: send(chat_id,"❌ Falha",mid)
+            delete_user_cmd()
+            return
         if cmd=="/kick":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            tgt_name=msg.get("reply_to_message",{}).get("from",{}).get("first_name","usuário")
             if tgt:
                 r=execute_action(chat_id,"KICK",tgt,None,"kick ADM")
-                send(chat_id,"👢 Kick" if r["success"] else f"❌ Falha",mid); return
+                if r["success"]:
+                    txt_ia=gerar_aviso_ia(tgt_name, "expulso por ADM", "kick", nivel=4)
+                    send(chat_id, txt_ia if txt_ia else f"👢 {tgt_name} expulso.", mid)
+            delete_user_cmd()
+            return
         if cmd=="/mute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            tgt_name=msg.get("reply_to_message",{}).get("from",{}).get("first_name","usuário")
             if tgt:
                 r=execute_action(chat_id,"MUTE",tgt,None,"mute ADM")
-                send(chat_id,"🔇 Mutado" if r["success"] else f"❌ Falha mute",mid); return
+                if r["success"]:
+                    txt_ia=gerar_aviso_ia(tgt_name, "mutado por ADM por 10 minutos", "mute", nivel=3)
+                    send(chat_id, txt_ia if txt_ia else f"🔇 {tgt_name} mutado 10min.", mid)
+            delete_user_cmd()
+            return
         if cmd=="/unmute":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
             if tgt:
                 r=execute_action(chat_id,"UNMUTE",tgt,None,"unmute")
-                send(chat_id,"🔊 Desmutado" if r["success"] else f"❌ Falha unmute",mid); return
+                send(chat_id,"🔊 Desmutado" if r["success"] else "❌ Falha",mid)
+            delete_user_cmd()
+            return
         if cmd=="/warn":
             tgt=msg.get("reply_to_message",{}).get("from",{}).get("id")
+            tgt_name=msg.get("reply_to_message",{}).get("from",{}).get("first_name","usuário")
             if tgt:
                 execute_action(chat_id,"WARN",tgt,None,"warn ADM")
-                send(chat_id,"⚠️ Warn",mid); return
+                txt_ia=gerar_aviso_ia(tgt_name, "advertido por ADM", "warn", nivel=2)
+                send(chat_id, txt_ia if txt_ia else f"⚠️ {tgt_name} advertido.", mid)
+            delete_user_cmd()
+            return
         if cmd=="/lock":
             set_cfg(chat_id,"lock_group",1)
             r=execute_action(chat_id,"LOCK",None,None,"lock ADM")
-            send(chat_id,"🔒 Trancado" if r["success"] else "❌ Falha",mid); return
+            send(chat_id,"🔒 Trancado" if r["success"] else "❌ Falha",mid)
+            delete_user_cmd()
+            return
         if cmd=="/unlock":
             set_cfg(chat_id,"lock_group",0)
             r=execute_action(chat_id,"UNLOCK",None,None,"unlock ADM")
-            send(chat_id,"🔓 Destrancado" if r["success"] else "❌ Falha",mid); return
+            send(chat_id,"🔓 Destrancado" if r["success"] else "❌ Falha",mid)
+            delete_user_cmd()
+            return
         if cmd=="/mode":
             mode=parts[1] if len(parts)>1 else "moderate"
             if mode in ("observer","moderate","strict","auto"):
-                set_cfg(chat_id,"moderation_mode",mode); send(chat_id,f"✅ Mode = {mode}",mid)
+                set_cfg(chat_id,"moderation_mode",mode)
+                send(chat_id,f"✅ Mode = {mode}",mid)
             else: send(chat_id,"Modes: observer, moderate, strict, auto",mid)
+            delete_user_cmd()
             return
-        try: execute_action(chat_id,"DELETE",None,mid,"comando admin")
-        except: pass
+        delete_user_cmd()
         return
+
     if is_admin(chat_id,uid):
         with db_lock:
-            c=get_db(); pend=c.execute("SELECT rules_json,created_at FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone(); c.close()
+            c=get_db()
+            pend=c.execute("SELECT rules_json,created_at FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))).fetchone()
+            c.close()
         low=text.lower().strip()
         if pend:
             try:
                 ct=datetime.fromisoformat(pend["created_at"])
                 if datetime.now(timezone.utc)-ct>timedelta(minutes=10):
-                    with db_lock: c=get_db(); c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))); c.commit(); c.close()
+                    with db_lock:
+                        c=get_db()
+                        c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid)))
+                        c.commit()
+                        c.close()
                     pend=None
             except: pass
         if pend and low in ("sim","s","yes","y","ok"):
@@ -791,39 +938,70 @@ def process_update(update):
             with db_lock:
                 c=get_db()
                 for rtxt in rules:
-                    kw=get_keywords(rtxt); pat=getattr(get_keywords,"last_regex",None)
+                    kw=get_keywords(rtxt)
+                    pat=getattr(get_keywords,"last_regex",None)
                     c.execute("INSERT INTO custom_rules(chat_id,rule_text,keywords,regex,created_by,created_at) VALUES(?,?,?,?,?,?)",(str(chat_id),rtxt,kw,pat,str(uid),datetime.now(timezone.utc).isoformat()))
-                c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))); c.commit(); c.close()
-            send(chat_id,f"✅ {len(rules)} regra(s) salva(s)!",mid); return
+                c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid)))
+                c.commit()
+                c.close()
+            send(chat_id,f"✅ {len(rules)} regra(s) salva(s)!",mid)
+            execute_action(chat_id,"DELETE",None,mid,"auto del")
+            return
         if pend and low in ("nao","não","n","cancelar"):
-            with db_lock: c=get_db(); c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid))); c.commit(); c.close()
-            send(chat_id,"❌ Cancelado",mid); return
-        if len(text)>=5:
+            with db_lock:
+                c=get_db()
+                c.execute("DELETE FROM pending_rules WHERE chat_id=? AND user_id=?",(str(chat_id),str(uid)))
+                c.commit()
+                c.close()
+            send(chat_id,"❌ Cancelado",mid)
+            execute_action(chat_id,"DELETE",None,mid,"auto del")
+            return
+        if len(text)>=4:
             rules=parse_rules_from_text(text)
             if rules:
-                with db_lock: c=get_db(); c.execute("INSERT OR REPLACE INTO pending_rules VALUES(?,?,?,?)",(str(chat_id),str(uid),json.dumps(rules),datetime.now(timezone.utc).isoformat())); c.commit(); c.close()
-                send(chat_id,f"Detectei {len(rules)} regra(s). Salvar? SIM/NAO",mid); return
+                with db_lock:
+                    c=get_db()
+                    c.execute("INSERT OR REPLACE INTO pending_rules VALUES(?,?,?,?)",(str(chat_id),str(uid),json.dumps(rules),datetime.now(timezone.utc).isoformat()))
+                    c.commit()
+                    c.close()
+                send(chat_id,f"Detectei {len(rules)} regra(s). Salvar? SIM/NAO",mid)
+                return
         return
     if uid==BOT_ID: return
-    if cfg.get("lock_group"): execute_action(chat_id,"DELETE",None,mid,"lock"); return
+    if cfg.get("lock_group"):
+        execute_action(chat_id,"DELETE",None,mid,"lock")
+        return
     if not text: return
     custom=check_custom_rules(text,chat_id)
-    if custom: handle_custom_violation(chat_id,uid,custom,mid, msg["from"].get("first_name","")); return
+    if custom:
+        handle_custom_violation(chat_id,uid,custom,mid, msg["from"].get("first_name",""))
+        return
     flood_info={"is_flood":False}
     if cfg.get("anti_flood"):
-        key=(str(chat_id),str(uid)); dq=mem_flood[key]; dq.append(time.time())
+        key=(str(chat_id),str(uid))
+        dq=mem_flood[key]
+        dq.append(time.time())
         while dq and time.time()-dq[0]>cfg.get("flood_window",15): dq.popleft()
-        if len(dq)>cfg.get("flood_limit",7): flood_info={"is_flood":True}; execute_action(chat_id,"MUTE",uid,mid,f"flood {len(dq)}"); dq.clear(); return
+        if len(dq)>cfg.get("flood_limit",7):
+            flood_info={"is_flood":True}
+            execute_action(chat_id,"MUTE",uid,mid,f"flood {len(dq)}")
+            dq.clear()
+            return
     if cfg.get("anti_spam"):
         mem_texts[(str(chat_id),str(uid))].append(text)
         if len(mem_texts[(str(chat_id),str(uid))])>=3 and len(set(mem_texts[(str(chat_id),str(uid))]))==1:
-            execute_action(chat_id,"DELETE",None,mid,"spam repetido"); return
+            execute_action(chat_id,"DELETE",None,mid,"spam repetido")
+            return
     ai_res=call_moderation_ai(text) if len(text)>2 else None
     decision=decision_engine("message", text, cfg, ai_res, custom, flood_info)
     if decision.action=="NONE": return
     if decision.action=="LOG":
         with db_lock:
-            c=get_db(); c.execute("INSERT INTO moderation_logs(chat_id,user_id,action,reason,message_id,success,confidence,created_at) VALUES(?,?,?,?,?,?,?,?)",(str(chat_id),str(uid),"LOG",decision.reason,mid,1,decision.confidence,datetime.now(timezone.utc).isoformat())); c.commit(); c.close(); return
+            c=get_db()
+            c.execute("INSERT INTO moderation_logs(chat_id,user_id,action,reason,message_id,success,confidence,created_at) VALUES(?,?,?,?,?,?,?,?)",(str(chat_id),str(uid),"LOG",decision.reason,mid,1,decision.confidence,datetime.now(timezone.utc).isoformat()))
+            c.commit()
+            c.close()
+        return
     if "DELETE" in decision.action: execute_action(chat_id,"DELETE",None,mid,decision.reason)
     if decision.action in ("WARN","MUTE","BAN","KICK"): execute_action(chat_id,decision.action,uid,mid,decision.reason)
     elif decision.action=="DELETE_WARN":
