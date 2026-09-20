@@ -241,12 +241,26 @@ def is_allowed_link(text,cfg):
     return True
 
 def parse_rules_from_text(text):
+    low=text.lower()
+    # Só aceita se tiver gatilho de regra
+    gatilhos = ["proibido","proibida","banido","vetado","regra","não pode","nao pode","proibir","não é permitido","nao é permitido"]
+    if not any(g in low for g in gatilhos):
+        # Se não tem gatilho, só aceita se começar com numero tipo "1. Proibido..."
+        lines_test=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
+        has_number = any(re.match(r"^\d+[\).\s-]", l) for l in lines_test)
+        if not has_number:
+            return []
+    
     lines=[l.strip() for l in text.splitlines() if len(l.strip())>=4]
     if not lines and len(text.strip())>=4: lines=[text.strip()]
     rules=[]
     for l in lines:
         if len(l)>250: continue
-        if len(l.split())>=2: rules.append(l[:200])
+        if len(l.split())>=2: 
+            # Remove numero do começo "1. "
+            l_clean = re.sub(r"^\d+[\).\s-]+", "", l).strip()
+            if len(l_clean.split())>=2:
+                rules.append(l_clean[:200])
     return rules[:20]
 
 def get_keywords(rule_text):
