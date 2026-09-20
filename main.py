@@ -718,6 +718,18 @@ def handle_private(msg):
     send(chat_id,"📚 *PV CONFIG - V17.9*\n`/start` - seus grupos com botões\nCole regras aqui e eu pergunto onde salvar.")
 
 def process_update(update):
+    # FIX - QUANDO BOT É REMOVIDO APAGA NA HORA
+    if "my_chat_member" in update:
+        try:
+            chat_id = update["my_chat_member"]["chat"]["id"]
+            new_status = update["my_chat_member"]["new_chat_member"]["status"]
+            if new_status in ["kicked", "left"]:
+                print(f"[Kʆɛɓɛʀ] BOT REMOVIDO DE {chat_id} - LIMPANDO")
+                wipe_group_data(chat_id)
+        except Exception as e:
+            print(f"my_chat_member err {e}")
+        return
+
     if "callback_query" in update:
         handle_callback(update["callback_query"])
         return
