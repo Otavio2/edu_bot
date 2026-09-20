@@ -432,23 +432,30 @@ def gerar_aviso_ia(nome, motivo, texto_original):
         except: continue
     return f"⚠️ {nome}, isso não pode aqui no grupo. ({motivo})"
 
+def set_cfg(chat_id,key,val):
+    global backup_pending
+    with db_lock:
+        c=get_db()
+        c.execute(f"UPDATE group_rules SET {key}=?, updated_at=? WHERE chat_id=?",(val,datetime.now(timezone.utc).isoformat(),str(chat_id)))
+        c.commit()
+        c.close()
+    backup_pending = True
+    threading.Thread(target=force_backup_now, daemon=True).start()
+
 def backup_worker():
     global backup_pending,last_backup
     while True:
-        time.sleep(300)
+        time.sleep(60)
         try:
             with db_lock:
                 c=get_db()
                 c.execute("DELETE FROM pending_rules WHERE datetime(created_at) < datetime('now','-10 minutes')")
                 c.execute("DELETE FROM moderation_logs WHERE id NOT IN (SELECT id FROM moderation_logs ORDER BY id DESC LIMIT 500)")
-                c.execute("DELETE FROM user_rule_hits WHERE datetime(last_at) < datetime('now','-7 days')")
-                c.execute("DELETE FROM warnings WHERE datetime(updated_at) < datetime('now','-7 days')")
                 c.commit()
                 c.close()
         except: pass
-        if not JSONBIN_URL or not backup_pending or time.time()-last_backup<300: continue
-        force_backup_now()
-threading.Thread(target=backup_worker,daemon=True).start()
+        if backup_pending or time.time()-last_backup>300:
+            force_backup_now()
 
 @app.route(WEBHOOK_PATH,methods=["POST"])
 def webhook():
