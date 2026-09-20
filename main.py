@@ -348,14 +348,18 @@ def execute_action(chat_id,action,target_id=None,message_id=None,reason=""):
     perms=get_bot_permissions(chat_id)
     if action=="DELETE" and not perms["can_delete"]: return {"success":False,"error":"no delete perm"}
     if action in ("MUTE","BAN","KICK","UNBAN","LOCK") and not perms["can_restrict"]:
-        if action in ("MUTE","BAN","KICK","UNBAN","LOCK") and not perms["can_restrict"]: return {"success":False,"error":"no restrict"}
+        return {"success":False,"error":"no restrict"}
+    # idempotencia
     h=hashlib.sha256(f"{chat_id}:{action}:{target_id}:{message_id}".encode()).hexdigest()
     c=get_db()
     if c.execute("SELECT 1 FROM processed_actions WHERE action_hash=?",(h,)).fetchone(): c.close(); return {"success":False,"dup":True}
     try: c.execute("INSERT INTO processed_actions VALUES(?,?)",(h,datetime.now(timezone.utc).isoformat())); c.commit()
     except: pass
     c.close()
-    c=get_db(); c.execute("INSERT INTO action_outbox(chat_id,action,target_id,message_id,reason,status,created_at) VALUES(?,?,?,?,?,?,?,?)",(str(chat_id),action,str(target_id or ""),message_id or 0,reason,"pending",datetime.now(timezone.utc).isoformat())); c.commit(); oid=c.execute("SELECT last_insert_rowid()").fetchone()[0]; c.close()
+    # CORREÇÃO P0: 7 colunas = 7?
+    c=get_db()
+    c.execute("INSERT INTO action_outbox(chat_id,action,target_id,message_id,reason,status,created_at) VALUES(?,?,?,?,?,?,?)",(str(chat_id),action,str(target_id or ""),message_id or 0,reason,"pending",datetime.now(timezone.utc).isoformat()))
+    c.commit(); oid=c.execute("SELECT last_insert_rowid()").fetchone()[0]; c.close()
     res={"ok":False}
     try:
         if action=="DELETE" and message_id: res=telegram_req("deleteMessage",{"chat_id":chat_id,"message_id":message_id})
@@ -380,12 +384,13 @@ def execute_action(chat_id,action,target_id=None,message_id=None,reason=""):
         elif action=="UNBAN" and target_id: res=telegram_req("unbanChatMember",{"chat_id":chat_id,"user_id":target_id})
         elif action=="LOCK":
             if perms["can_restrict"]: res=telegram_req("setChatPermissions",{"chat_id":chat_id,"permissions":{"can_send_messages":False}})
-    except: res={"ok":False}
+    except Exception as e:
+        res={"ok":False,"type":"exception","desc":str(e)}
     c=get_db(); c.execute("UPDATE action_outbox SET status=?, attempts=attempts+1 WHERE id=?",("done" if res.get("ok") else "failed", oid))
     c.execute("INSERT INTO moderation_logs(chat_id,user_id,action,reason,message_id,success,confidence,created_at,error_type) VALUES(?,?,?,?,?,?,?,?,?)",(str(chat_id),str(target_id or ""),action,reason,message_id or 0,1 if res.get("ok") else 0,0,datetime.now(timezone.utc).isoformat(),res.get("type","")))
     c.commit(); c.close()
     return {"success":bool(res.get("ok"))}
-
+    
 def backup_worker():
     global backup_pending,last_backup
     while True:
