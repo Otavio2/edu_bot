@@ -18,13 +18,9 @@ def build_storage_dynamic():
     s={}
     j_id = os.getenv("JSONBIN_ID","").strip()
     j_key = os.getenv("JSONBIN_KEY","").strip()
-    # ignora IDs velhos 6aaf...
-    if j_id and j_key and len(j_id)>=20:
+    if j_id and j_key and len(j_id)>=8:  # FIX: era >=20
         s["jsonbin"]={"id":j_id,"key":j_key,"endpoint":f"https://api.jsonbin.io/v3/b/{j_id}"}
-        print(f"[Kʆɛɓɛʀ] Storage OK {j_id[:8]}")
-    elif j_key:
-        s["autocreate"]={"key":j_key,"endpoint":"https://api.jsonbin.io/v3/b"}
-        print(f"[Kʆɛɓɛʀ] Modo AUTOCREATE - vai criar bin")
+        print(f"[Kʆɛɓɛʀ] Storage OK {j_id[:8]} FIXO")
     return s
 
 STORAGES = build_storage_dynamic()
@@ -171,7 +167,6 @@ def force_backup_now():
                 print(f"[{KLEBER_SIG}] BACKUP OK")
             else:
                 print(f"[{KLEBER_SIG}] BACKUP FAIL {r.text[:200]}")
-                if "Invalid" in r.text: STORAGES.pop("jsonbin",None)
     except Exception as e: print(f"Backup err {e}")
 
 def telegram_req(method,payload=None):
