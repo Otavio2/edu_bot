@@ -1,278 +1,238 @@
-import os, time, json, base64, logging, requests, re
+import os, time, json, base64, re, threading, requests
 from collections import defaultdict, deque
 from flask import Flask, request
 
-# === CONFIG OFICIAL Kʆɛɓɛʀ ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN não definido!")
-
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET","")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL","") or os.getenv("WEBHOOK_URL","")
 SIGNATURE = "Kʆɛɓɛʀ"
-API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-try:
-    MY_ID = int(os.getenv("BOT_ID","0"))
-except:
-    MY_ID = 0
-
-PROVIDERS_RAW = {
-    "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1"},
-    "cerebras": {"key_env": "CEREBRAS_API_KEY", "endpoint": "https://api.cerebras.ai/v1"},
-    "mistral": {"key_env": "MISTRAL_API_KEY", "endpoint": "https://api.mistral.ai/v1"},
-    "openrouter": {"key_env": "OPENROUTER_API_KEY", "endpoint": "https://openrouter.ai/api/v1"},
-    "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta"}
-}
-FALLBACK_MODELS = {
-    "groq": ["llama-3.3-70b-versatile"],
-    "cerebras": ["llama3.1-8b"],
-    "mistral": ["mistral-large-latest"],
-    "openrouter": ["meta-llama/llama-3.1-8b-instruct:free"],
-    "gemini": ["gemini-1.5-flash"]
-}
+MY_ID = int(os.getenv("BOT_ID","0")) if os.getenv("BOT_ID") else 0
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-def log(m): print(f"[{SIGNATURE}] {m}", flush=True)
+sess = requests.Session()
 
-session = requests.Session()
-session.headers.update({"User-Agent": f"OrbitADM/{SIGNATURE}"})
-bot_perm_cache = {}
-cfg_cache = {}
-flood_cache = defaultdict(lambda: deque(maxlen=12))
-TEXTO_EXPLICATIVO = f"🤖 ORBIT ALLIANCE ADM - {SIGNATURE}\nEu sou ADM com cérebro de IA.\n1️⃣ BIO: Se bio proíbe link/+18/política e Seguir Bio ON, eu protejo.\n2️⃣ 9 BOTÕES: Bio, Link, +18, Briga, Flert, Política, Flood, Venda, Boas-vindas.\nSó /painel. Trabalho com ADMs. Dev: {SIGNATURE}"
+# === SUA ESTRUTURA AUTOMÁTICA ===
+PROVIDERS_RAW = {
+    "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1", "format": "openai", "timeout": 6},
+    "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "format": "gemini", "timeout": 8},
+    "cerebras": {"key_env": "CEREBRAS_API_KEY", "endpoint": "https://api.cerebras.ai/v1", "format": "openai", "timeout": 6},
+    "openrouter": {"key_env": "OPENROUTER_API_KEY", "endpoint": "https://openrouter.ai/api/v1", "format": "openai", "timeout": 8},
+    "cloudflare": {"key_env": "CLOUDFLARE_API_TOKEN", "endpoint": f"https://api.cloudflare.com/client/v4/accounts/{os.getenv('CLOUDFLARE_ACCOUNT_ID')}/ai/run/", "format": "cloudflare", "timeout": 8, "requires": ["CLOUDFLARE_ACCOUNT_ID"]},
+    "mistral": {"key_env": "MISTRAL_API_KEY", "endpoint": "https://api.mistral.ai/v1", "format": "openai", "timeout": 8},
+}
+FALLBACK_MODELS = {
+    "groq": ["llama-3.3-70b-versatile","llama-3.1-8b-instant"],
+    "gemini": ["gemini-2.0-flash","gemini-1.5-flash"],
+    "cerebras": ["llama-3.3-70b","llama3.1-8b"],
+    "openrouter": ["meta-llama/llama-3.1-8b-instruct:free"],
+    "cloudflare": ["@cf/meta/llama-3.1-8b-instruct"],
+    "mistral": ["mistral-large-latest","mistral-small-latest"]
+}
+MODEL_CACHE = {}; AI_MODEL_BLACKLIST = {}; AI_PROVIDER_BLACKLIST = {}
+AI_STATS = {"fallbacks":0,"total_calls":0}
+PROVIDER_CONCURRENCY = {"groq":2,"gemini":2,"mistral":2,"cerebras":3,"openrouter":2,"cloudflare":2}
+PROVIDER_SEMAPHORES = {k: threading.Semaphore(v) for k,v in PROVIDER_CONCURRENCY.items()}
+thread_local=threading.local()
+def get_session():
+    if not hasattr(thread_local,"session"): thread_local.session=requests.Session()
+    return thread_local.session
 
-def send(cid, text, reply_to=None):
-    try:
-        if SIGNATURE not in text:
-            text = f"{text}\n\n<i>{SIGNATURE}</i>"
-        data={"chat_id":cid,"text":text[:4000],"parse_mode":"HTML","disable_web_page_preview":True}
-        if reply_to: data["reply_to_message_id"]=reply_to
-        session.post(f"{API}/sendMessage", json=data, timeout=8)
-    except Exception as e:
-        log(f"send erro: {e}")
+DEFAULT_CFG = {"seguir_bio":True,"anti_link":True,"anti_18":True,"anti_briga":True,"anti_flert":True,"anti_politica":True,"anti_flood":True,"anti_venda":True,"welcome":True}
+cfg_db = {}; bio_cache = {}; perm_cache = {}; flood_hist = defaultdict(lambda: deque(maxlen=15))
 
-def execute_delete(cid, mid):
-    try:
-        r=session.post(f"{API}/deleteMessage", json={"chat_id":cid,"message_id":mid}, timeout=8).json()
-        return r.get("ok", False)
-    except:
-        return False
+def tg(m,p):
+    try: return get_session().post(f"{API}/{m}", json=p, timeout=10).json()
+    except: return {}
 
-def is_admin(cid, uid):
-    suid=str(uid)
-    if suid==CREATOR_ID: return True
-    if MY_ID and uid==MY_ID: return True
-    try:
-        key=f"adm_{cid}_{uid}"
-        if key in bot_perm_cache:
-            perms, ts = bot_perm_cache[key]
-            if time.time()-ts < 300: return perms
-        r=session.get(f"{API}/getChatMember", params={"chat_id":cid,"user_id":uid}, timeout=8).json()
-        if not r.get("ok"): return False
-        status=r["result"]["status"]
-        is_adm = status in ["administrator","creator"]
-        bot_perm_cache[key]=(is_adm, time.time())
-        return is_adm
-    except:
-        return False
+def auto_setup():
+    # 1. AUTO DESCOBRE BOT ID
+    global MY_ID
+    if not MY_ID:
+        me=tg("getMe",{}).get("result",{})
+        MY_ID=me.get("id",0)
+        print(f"[{SIGNATURE}] BOT ID AUTO: {MY_ID}")
+    # 2. AUTO SETA WEBHOOK
+    if RENDER_URL:
+        url=f"{RENDER_URL.rstrip('/')}/"
+        data={"url":url, "allowed_updates":["message","edited_message","callback_query","chat_member","my_chat_member"]}
+        if WEBHOOK_SECRET: data["secret_token"]=WEBHOOK_SECRET
+        r=tg("setWebhook",data)
+        print(f"[{SIGNATURE}] WEBHOOK AUTO: {url} -> {r}")
+    # 3. AUTO LIMPA BIO CACHE A CADA 10 MIN
+    def bio_auto_refresh():
+        while True:
+            time.sleep(600)
+            for cid in list(bio_cache.keys()):
+                try: get_real_bio(cid, force=True)
+                except: pass
+    threading.Thread(target=bio_auto_refresh, daemon=True).start()
+    print(f"[{SIGNATURE}] AUTO TUDO ATIVO")
 
 def get_cfg(cid):
-    if cid not in cfg_cache:
-        cfg_cache[cid]={"bio_rules":"Proibido link, +18, política, briga, venda","follow_bio":True,"anti_link":True,"anti_sensual":True,"anti_briga":True,"anti_flert":False,"anti_politica":True,"anti_flood":True,"anti_venda":True,"welcome_enabled":True}
-    return cfg_cache[cid]
+    if cid not in cfg_db: cfg_db[cid]=DEFAULT_CFG.copy()
+    return cfg_db[cid]
 
-def send_panel(cid, mid=None):
-    cfg=get_cfg(cid)
-    txt=(f"🛡️ <b>ORBIT PAINEL - {SIGNATURE}</b>\n"
-         f"Dono: {CREATOR_ID}\n"
-         f"Bio: {cfg['bio_rules'][:90]}\n\n"
-         f"📖 Bio:{'ON' if cfg['follow_bio'] else 'OFF'} | 🔗 Link:{'ON' if cfg['anti_link'] else 'OFF'} | 🔞 +18:{'ON' if cfg['anti_sensual'] else 'OFF'}\n"
-         f"🤬 Briga:{'ON' if cfg['anti_briga'] else 'OFF'} | 🏛️ Pol:{'ON' if cfg['anti_politica'] else 'OFF'} | 📢 Flood:{'ON' if cfg['anti_flood'] else 'OFF'}\n"
-         f"💬 Flert:{'ON' if cfg['anti_flert'] else 'OFF'} | 🛒 Venda:{'ON' if cfg['anti_venda'] else 'OFF'}\n\n"
-         f"⚡ Dev: {SIGNATURE} | 100% ON")
-    send(cid, txt, mid)
+def get_real_bio(cid, force=False):
+    now=time.time()
+    if not force and cid in bio_cache and now-bio_cache[cid]['updated_at']<600: return bio_cache[cid]
+    r=tg("getChat",{"chat_id":cid}); ch=r.get("result",{})
+    d={"name":ch.get("title",""),"bio":ch.get("description",""),"updated_at":now}
+    bio_cache[cid]=d; return d
 
-def is_duvida_sobre_bot(text):
-    tl=text.lower()
-    gatilhos=["o que voce faz","o que vc faz","como funciona","pra que serve","quem é voce","o que e esse bot","/ajuda","/help","/sobre","me explica"]
-    return any(g in tl for g in gatilhos)
+def get_bot_perm(cid, force=False):
+    now=time.time()
+    if not force and cid in perm_cache and now-perm_cache[cid]['updated_at']<300: return perm_cache[cid]
+    bid=MY_ID or tg("getMe",{}).get("result",{}).get("id",0)
+    r=tg("getChatMember",{"chat_id":cid,"user_id":bid}); res=r.get("result",{})
+    can=res.get("can_delete_messages",False) or res.get("status") in ["administrator","creator"]
+    d={"can_delete":can,"state":"ONLINE" if can else "DEGRADED","updated_at":now}
+    perm_cache[cid]=d; return d
 
-def gerar_explicacao_ia(pergunta):
-    prompt=f"Pergunta: '{pergunta}'. Explique em 40 palavras ORBIT ADM by {SIGNATURE}, BIO+9 BOTOES. PT-BR curto."
-    for prov in ["groq","cerebras","mistral"]:
-        if prov not in PROVIDERS_RAW: continue
-        key=os.getenv(PROVIDERS_RAW[prov]["key_env"])
-        if not key: continue
-        try:
-            r=session.post(f"{PROVIDERS_RAW[prov]['endpoint']}/chat/completions", json={"model":FALLBACK_MODELS[prov][0],"messages":[{"role":"user","content":prompt}],"max_tokens":120}, headers={"Authorization":f"Bearer {key}"}, timeout=7)
-            if r.status_code==200: return r.json()["choices"][0]["message"]["content"][:600]
-        except: continue
-    return TEXTO_EXPLICATIVO
+def is_admin(cid,uid):
+    if str(uid)==CREATOR_ID: return True
+    if MY_ID and uid==MY_ID: return True
+    return tg("getChatMember",{"chat_id":cid,"user_id":uid}).get("result",{}).get("status") in ["administrator","creator"]
 
-def baixar_foto_telegram(file_id):
+def send(cid,text,mid=None,kb=None):
+    if SIGNATURE not in text: text=f"{text}\n\n<i>{SIGNATURE}</i>"
+    d={"chat_id":cid,"text":text[:3500],"parse_mode":"HTML","disable_web_page_preview":True}
+    if mid: d["reply_to_message_id"]=mid
+    if kb: d["reply_markup"]=json.dumps(kb)
+    get_session().post(f"{API}/sendMessage", json=d, timeout=10)
+
+def delete_msg(cid,mid):
+    if not get_bot_perm(cid)["can_delete"]: return False
+    return tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok",False)
+
+def baixar_b64(fid):
     try:
-        r=session.get(f"{API}/getFile", params={"file_id":file_id}, timeout=8).json()
-        if not r.get("ok"): return None
-        fp=r["result"]["file_path"]
-        url=f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}"
-        img=session.get(url, timeout=12).content
-        if len(img) > 4_000_000: return None # evita estouro
-        return base64.b64encode(img).decode()
-    except Exception as e:
-        log(f"baixar erro: {e}")
-        return None
-
-def ia_visao_porn(b64_image):
-    if "gemini" not in PROVIDERS_RAW: return None
-    key=os.getenv(PROVIDERS_RAW["gemini"]["key_env"])
-    if not key: return None
-    try:
-        body={"contents":[{"parts":[{"text":"Essa imagem tem nudez explícita, pornografia, genitália, ato sexual, hentai? Responda só SIM ou NAO."},{"inline_data":{"mime_type":"image/jpeg","data":b64_image}}]}],"generationConfig":{"temperature":0.1}}
-        r=session.post(f"{PROVIDERS_RAW['gemini']['endpoint']}/models/gemini-1.5-flash:generateContent?key={key}", json=body, timeout=12)
-        if r.status_code==200:
-            txt=r.json()["candidates"][0]["content"]["parts"][0]["text"].lower()
-            return "sim" in txt
+        fp=tg("getFile",{"file_id":fid}).get("result",{}).get("file_path")
+        if not fp: return None
+        data=get_session().get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}", timeout=10).content
+        if len(data)>3500000: return None
+        return base64.b64encode(data).decode()
     except: return None
-    return None
 
-def call_ai_moderation(text, cfg):
-    prompt=f"BIO:{cfg.get('bio_rules')} BOTOES:sensual={cfg.get('anti_sensual')} link={cfg.get('anti_link')} politica={cfg.get('anti_politica')} briga={cfg.get('anti_briga')} MSG:{text} JSON:{{\"violation\":bool,\"rule_key\":\"sensual|link|politica|briga|venda|flert|flood\",\"confidence\":0-100,\"reason\":\"curto\",\"bio_ref\":bool}}"
-    for prov in ["groq","cerebras","mistral","gemini"]:
-        if prov not in PROVIDERS_RAW: continue
-        key=os.getenv(PROVIDERS_RAW[prov]["key_env"])
-        if not key: continue
+def call_provider(provider, prompt, b64=None):
+    if AI_PROVIDER_BLACKLIST.get(provider,0)>time.time(): return None
+    cfg=PROVIDERS_RAW.get(provider)
+    if not cfg: return None
+    key=os.getenv(cfg["key_env"])
+    if not key: return None
+    for req in cfg.get("requires",[]):
+        if not os.getenv(req): return None
+    sem=PROVIDER_SEMAPHORES.get(provider)
+    for model in FALLBACK_MODELS.get(provider,[]):
+        if AI_MODEL_BLACKLIST.get(f"{provider}:{model}",0)>time.time(): continue
+        if sem: sem.acquire()
         try:
-            if prov=="gemini":
-                r=session.post(f"{PROVIDERS_RAW[prov]['endpoint']}/models/{FALLBACK_MODELS[prov][0]}:generateContent?key={key}", json={"contents":[{"parts":[{"text":prompt}]}]}, timeout=8)
-                if r.status_code==200:
-                    out=r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    m=re.search(r'\{.*\}', out, re.DOTALL)
-                    if m: return json.loads(m.group())
-            else:
-                r=session.post(f"{PROVIDERS_RAW[prov]['endpoint']}/chat/completions", json={"model":FALLBACK_MODELS[prov][0],"messages":[{"role":"user","content":prompt}],"temperature":0.2,"max_tokens":200}, headers={"Authorization":f"Bearer {key}"}, timeout=8)
-                if r.status_code==200:
-                    out=r.json()["choices"][0]["message"]["content"]
-                    m=re.search(r'\{.*\}', out, re.DOTALL)
-                    if m: return json.loads(m.group())
-        except: continue
+            s=get_session()
+            if cfg["format"]=="openai":
+                url=cfg["endpoint"].rstrip("/")+"/chat/completions"
+                r=s.post(url, headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":prompt}],"temperature":0.1,"max_tokens":400}, timeout=cfg["timeout"]).json()
+                return r["choices"][0]["message"]["content"]
+            elif cfg["format"]=="gemini":
+                url=f"{cfg['endpoint']}/models/{model}:generateContent?key={key}"
+                parts=[{"text":prompt}]
+                if b64: parts.append({"inline_data":{"mime_type":"image/jpeg","data":b64}})
+                r=s.post(url, json={"contents":[{"parts":parts}],"generationConfig":{"temperature":0.1,"maxOutputTokens":400}}, timeout=cfg["timeout"]).json()
+                return r["candidates"][0]["content"]["parts"][0]["text"]
+            elif cfg["format"]=="cloudflare":
+                url=cfg["endpoint"].rstrip("/")+f"{model}"
+                r=s.post(url, headers={"Authorization":f"Bearer {key}"}, json={"prompt":prompt}, timeout=cfg["timeout"]).json()
+                return r.get("result",{}).get("response")
+        except Exception as e:
+            AI_MODEL_BLACKLIST[f"{provider}:{model}"]=time.time()+120
+            continue
+        finally:
+            if sem: sem.release()
+    AI_PROVIDER_BLACKLIST[provider]=time.time()+180
+    AI_STATS["fallbacks"]+=1
     return None
 
-def active_rule_check(cfg, rule_key, bio_ref):
-    if bio_ref and cfg.get("follow_bio"): return True
-    if not rule_key: return False
-    map_keys={"sensual":"anti_sensual","link":"anti_link","politica":"anti_politica","briga":"anti_briga","venda":"anti_venda","flert":"anti_flert","flood":"anti_flood"}
-    return cfg.get(map_keys.get(rule_key,""), False)
+def ia_analisa(cid,txt,b64,hist):
+    cfg=get_cfg(cid); bio=get_real_bio(cid)
+    prompt=f"""Você é ORBIT V24 AUTO. GRUPO:{bio['name']} BIO:"{bio['bio']}" BOTOES:{json.dumps(cfg)} SEGUIR_BIO:{'ON' if cfg['seguir_bio'] else 'OFF'} HIST:{hist[-5:]} MSG:"{txt}" MIDIA:{'SIM' if b64 else 'NAO'} Analise intenção. Só viola se botão ON ou bio ON. RETORNE JSON: {{"viola":bool,"motivo":"curto","origem":"botao/bio/nenhuma","regra":"anti_link|anti_18|anti_briga|anti_flert|anti_politica|anti_venda|anti_flood|bio","confianca":0.0-1.0}}"""
+    for prov in ["groq","gemini","cerebras","mistral","openrouter","cloudflare"]:
+        out=call_provider(prov, prompt, b64 if prov=="gemini" else None)
+        if out:
+            try:
+                m=re.search(r'\{.*\}',out,re.DOTALL)
+                if m: return json.loads(m.group())
+            except: continue
+    return None
 
-def flood_hist_check(cid, uid, txt):
-    key=f"{cid}_{uid}"; now=time.time(); dq=flood_cache[key]
-    # limpa antigo >20s
-    while dq and now - dq[0][0] > 20:
-        dq.popleft()
-    dq.append((now, txt))
-    if len(dq)>=6: return True
-    if len(dq)>=4 and txt and len(set([x[1] for x in dq]))==1: return True
-    return False
+def painel_kb(cfg):
+    def ic(v): return "✅" if v else "❌"
+    return {"inline_keyboard":[
+        [{"text":f"{ic(cfg['seguir_bio'])} 📖 Seguir Bio: {'ON' if cfg['seguir_bio'] else 'OFF'}","callback_data":"t:seguir_bio"}],
+        [{"text":f"{ic(cfg['anti_link'])} Anti-Link","callback_data":"t:anti_link"}, {"text":f"{ic(cfg['anti_18'])} Anti +18","callback_data":"t:anti_18"}],
+        [{"text":f"{ic(cfg['anti_briga'])} Anti-Briga","callback_data":"t:anti_briga"}, {"text":f"{ic(cfg['anti_flert'])} Anti-Flert","callback_data":"t:anti_flert"}],
+        [{"text":f"{ic(cfg['anti_politica'])} Anti-Política","callback_data":"t:anti_politica"}, {"text":f"{ic(cfg['anti_flood'])} Anti-Flood","callback_data":"t:anti_flood"}],
+        [{"text":f"{ic(cfg['anti_venda'])} Anti-Venda","callback_data":"t:anti_venda"}, {"text":f"{ic(cfg['welcome'])} 👋 Boas-vindas","callback_data":"t:welcome"}],
+        [{"text":"🔄 Ler Bio Agora","callback_data":"refresh_bio"}]
+    ]}
 
-def process_update(upd):
-    msg=upd.get("message") or upd.get("edited_message")
-    if not msg: return
+def painel_txt(cid):
+    bio=get_real_bio(cid); perm=get_bot_perm(cid); cfg=get_cfg(cid)
+    ativos=sum([cfg['anti_link'],cfg['anti_18'],cfg['anti_briga'],cfg['anti_flert'],cfg['anti_politica'],cfg['anti_flood'],cfg['anti_venda']])
+    return f"🤖 <b>ORBIT ADM V24.3 AUTO</b>\nGrupo: {bio['name']}\nBio: {(bio['bio'][:90] or 'sem bio')}...\nEstado: {perm['state']} | {ativos}/7 | {SIGNATURE} | IA: {AI_STATS['total_calls']}"
+
+def send_painel(cid,mid=None): send(cid,painel_txt(cid),mid,painel_kb(get_cfg(cid)))
+
+def handle_message(msg):
     cid=msg["chat"]["id"]; mid=msg["message_id"]; uid=msg["from"]["id"]
     txt=(msg.get("text") or msg.get("caption") or "").strip()
-
-    if str(uid)==CREATOR_ID:
-        if txt.startswith(("/painel","/start","/help")): send_panel(cid,mid)
-        return
-
-    tem_foto="photo" in msg; tem_video="video" in msg; tem_gif="animation" in msg; tem_sticker="sticker" in msg
-    tem_midia=tem_foto or tem_video or tem_gif or tem_sticker
-    file_id=None
-    if tem_foto: file_id=msg["photo"][-1]["file_id"]
-    elif tem_video: file_id=msg["video"]["file_id"]
-    elif tem_gif: file_id=msg["animation"]["file_id"]
-    elif tem_sticker: file_id=msg["sticker"]["file_id"]
-
-    if not txt and not tem_midia: return
-
-    if txt and is_duvida_sobre_bot(txt):
-        k=f"exp_{cid}"; last=bot_perm_cache.get(k,(None,0))[1] if k in bot_perm_cache else 0
-        if time.time()-last>120:
-            send(cid, gerar_explicacao_ia(txt), mid)
-            bot_perm_cache[k]=(None,time.time())
-        return
-
-    if txt.startswith(("/painel","/start")):
-        if not is_admin(cid,uid): send(cid,"⛔ Só ADM pode abrir painel.",mid); return
-        send_panel(cid,mid); return
-
-    if is_admin(cid,uid): return
-
-    if msg.get("new_chat_members"):
-        cfg=get_cfg(cid)
-        if cfg.get("welcome_enabled"):
+    if MY_ID and uid==MY_ID: return
+    if txt.startswith(("/painel","/start","/menu")):
+        if not is_admin(cid,uid): send(cid,"⛔ Só ADM."); return
+        get_real_bio(cid,True); get_bot_perm(cid,True); send_painel(cid,mid); return
+    if "new_chat_members" in msg:
+        if get_cfg(cid)["welcome"]:
             for u in msg["new_chat_members"]:
-                if MY_ID and u["id"]==MY_ID: continue
-                send(cid,f"👋 Bem-vindo(a) {u.get('first_name','')}! Leia a bio 📖")
+                if u["id"]!=MY_ID: send(cid,f"👋 Bem-vindo(a) {u.get('first_name','')}! Leia a descrição.")
         return
+    if is_admin(cid,uid): return
+    k=f"{cid}_{uid}"; flood_hist[k].append((time.time(), txt or "[midia]")); hist=[h[1] for h in flood_hist[k]]
+    fid=msg.get("photo",[{}])[-1].get("file_id") or msg.get("video",{}).get("file_id") or msg.get("sticker",{}).get("file_id")
+    b64=baixar_b64(fid) if fid and get_cfg(cid)["anti_18"] else None
+    if not txt and not b64: return
+    ia=ia_analisa(cid,txt,b64,hist)
+    if not ia or not ia.get("viola") or ia.get("confianca",0)<0.65: return
+    cfg=get_cfg(cid); regra=ia.get("regra",""); origem=ia.get("origem","")
+    if origem=="botao" and not cfg.get(regra,False): return
+    if origem=="bio" and not cfg.get("seguir_bio",False): return
+    if delete_msg(cid,mid): send(cid,f"⚠️ Removido: {ia.get('motivo','violação')} [{regra}]")
 
-    cfg=get_cfg(cid)
-
-    if tem_midia and cfg.get("anti_sensual"):
-        resultado_visao=None
-        if file_id and (tem_foto or tem_video or tem_gif):
-            b64=baixar_foto_telegram(file_id)
-            if b64: resultado_visao=ia_visao_porn(b64)
-
-        if resultado_visao is True:
-            if execute_delete(cid,mid):
-                send(cid,f"🔞 Mídia +18 apagada pela IA de visão.",mid)
-            return
-        elif resultado_visao is None: # 2ª BASE
-            if (tem_foto or tem_video or tem_gif) and not txt:
-                if execute_delete(cid,mid):
-                    send(cid,"🔞 Mídia sem legenda bloqueada (Anti +18 ON - 2ª base).",mid)
-                return
-            if tem_sticker:
-                set_name=msg.get("sticker",{}).get("set_name","").lower()
-                if any(p in set_name for p in ["porn","hentai","nude","nsfw","sex","pack","18"]):
-                    if execute_delete(cid,mid): send(cid,"🔞 Sticker +18 bloqueado.",mid)
-                    return
-        if tem_sticker and msg.get("sticker",{}).get("emoji","") in ["🍑","🍆","🔞"]:
-            if execute_delete(cid,mid): send(cid,"🔞 Sticker +18.",mid)
-            return
-
-    if cfg.get("anti_flood"):
-        if flood_hist_check(cid,uid,txt or "[midia]"):
-            if execute_delete(cid,mid): send(cid,f"📢 Flood detectado.",mid)
-            return
-
-    txt_final = f"[{'foto' if tem_foto else 'video' if tem_video else 'gif' if tem_gif else 'sticker' if tem_sticker else ''}] {txt}".strip()
-    if len(txt_final)<2: return
-    chk=call_ai_moderation(txt_final, cfg)
-    if chk and chk.get("violation") and chk.get("confidence",0)>=75:
-        if active_rule_check(cfg, chk.get("rule_key"), chk.get("bio_ref")):
-            if execute_delete(cid,mid):
-                send(cid,f"⚠️ {chk.get('reason','Violação detectada')}",mid)
+def handle_callback(q):
+    cid=q["message"]["chat"]["id"]; uid=q["from"]["id"]; mid=q["message"]["message_id"]
+    if not is_admin(cid,uid): tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Só ADM","show_alert":True}); return
+    d=q["data"]; cfg=get_cfg(cid)
+    if d.startswith("t:"):
+        k=d[2:]
+        if k in cfg: cfg[k]=not cfg[k]
+        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(cid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(cfg)})
+        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":f"{k} {'ON' if cfg[k] else 'OFF'}"})
+    elif d=="refresh_bio":
+        get_real_bio(cid,True); get_bot_perm(cid,True)
+        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(cid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(get_cfg(cid))})
+        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Bio atualizada AUTO!"})
 
 @app.route("/", methods=["POST"])
 def webhook():
-    if WEBHOOK_SECRET:
-        sec = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-        if sec!= WEBHOOK_SECRET:
-            return "forbidden", 403
-    try:
-        data=request.get_json(force=True)
-        process_update(data)
-    except Exception as e:
-        log(f"Erro webhook: {e}")
-    return "ok", 200
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token")!=WEBHOOK_SECRET: return "forbidden",403
+    u=request.get_json(force=True)
+    if "callback_query" in u: handle_callback(u["callback_query"])
+    elif "message" in u: handle_message(u["message"])
+    elif "edited_message" in u: handle_message(u["edited_message"])
+    return "ok",200
 
 @app.route("/", methods=["GET"])
-def home():
-    return f"ORBIT ALLIANCE ADM ONLINE - {SIGNATURE} - Dono {CREATOR_ID} - OK", 200
+def home(): return f"ORBIT V24.3 AUTO {SIGNATURE} ONLINE",200
 
+# AUTO START
+auto_setup()
 if __name__=="__main__":
-    port=int(os.getenv("PORT","10000"))
-    log(f"Iniciando {SIGNATURE} na porta {port}")
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
