@@ -2,6 +2,26 @@ import os, time, json, base64, re, threading, requests
 from collections import defaultdict, deque
 from flask import Flask, request
 
+CFG_FILE="orbit_cfg.json"
+cfg_lock=threading.Lock()
+
+def load_cfg_file():
+    try:
+        if os.path.exists(CFG_FILE):
+            with open(CFG_FILE,"r",encoding="utf-8") as f:
+                data=json.load(f)
+                # converte chave str -> int
+                return {int(k):v for k,v in data.items()}
+    except: pass
+    return {}
+
+def save_cfg_file():
+    try:
+        with cfg_lock:
+            with open(CFG_FILE,"w",encoding="utf-8") as f:
+                json.dump(cfg_db,f,ensure_ascii=False)
+    except: pass
+
 def get_token():
     for k in ["BOT_TOKEN","BOT _TOKEN","TELEGRAM_TOKEN","TOKEN"]:
         v=os.getenv(k)
@@ -10,21 +30,17 @@ def get_token():
             return v.strip()
     for k,v in os.environ.items():
         if k.replace(" ","").replace("_","").upper() in ["BOTTOKEN","TELEGRAMTOKEN"] and v.strip():
-            print(f"[Kʆɛɓɛʀ] TOKEN ACHADO POR SCAN: '{k}'")
             return v.strip()
     return ""
 BOT_TOKEN=get_token()
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN / BOT _TOKEN não encontrado")
+if not BOT_TOKEN: raise RuntimeError("BOT_TOKEN não encontrado")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET","")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL","") or os.getenv("WEBHOOK_URL","") or os.getenv("RENDER_EXTERNAL_HOSTNAME","") or "https://edu-bot-6yfa.onrender.com"
-if not RENDER_URL.startswith("http"):
-    RENDER_URL = f"https://{RENDER_URL}"
+if not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
 SIGNATURE = "Kʆɛɓɛʀ"
 MY_ID = int(os.getenv("BOT_ID","0")) if os.getenv("BOT_ID") else 0
-
 app = Flask(__name__)
 
 PROVIDERS_RAW = {
@@ -43,7 +59,7 @@ FALLBACK_MODELS = {
     "cloudflare": ["@cf/meta/llama-3.1-8b-instruct"],
     "mistral": ["mistral-large-latest","mistral-small-latest"]
 }
-MODEL_CACHE = {}; AI_MODEL_BLACKLIST = {}; AI_PROVIDER_BLACKLIST = {}
+AI_MODEL_BLACKLIST = {}; AI_PROVIDER_BLACKLIST = {}
 AI_STATS = {"fallbacks":0,"total_calls":0}
 PROVIDER_CONCURRENCY = {"groq":2,"gemini":2,"mistral":2,"cerebras":3,"openrouter":2,"cloudflare":2}
 PROVIDER_SEMAPHORES = {k: threading.Semaphore(v) for k,v in PROVIDER_CONCURRENCY.items()}
@@ -53,8 +69,10 @@ def get_session():
     return thread_local.session
 
 DEFAULT_CFG = {"seguir_bio":True,"anti_link":True,"anti_18":True,"anti_briga":True,"anti_flert":True,"anti_politica":True,"anti_flood":True,"anti_venda":True,"welcome":True}
-cfg_db = {}; bio_cache = {}; perm_cache = {}; flood_hist = defaultdict(lambda: deque(maxlen=15))
-grupos_conhecidos = set()
+cfg_db = load_cfg_file()
+print(f"[{SIGNATURE}] CFG CARREGADAS: {len(cfg_db)} grupos")
+bio_cache = {}; perm_cache = {}; flood_hist = defaultdict(lambda: deque(maxlen=15))
+grupos_conhecidos = set(cfg_db.keys())
 
 def tg(m,p):
     try: return get_session().post(f"{API}/{m}", json=p, timeout=10).json()
@@ -63,30 +81,27 @@ def tg(m,p):
 def auto_setup():
     global MY_ID
     if not MY_ID:
-        try:
-            me=tg("getMe",{}).get("result",{})
-            MY_ID=me.get("id",0)
+        try: MY_ID=tg("getMe",{}).get("result",{}).get("id",0)
         except: pass
-        print(f"[{SIGNATURE}] BOT ID AUTO: {MY_ID}")
     if RENDER_URL:
         url=f"{RENDER_URL.rstrip('/')}/"
         data={"url":url, "allowed_updates":["message","edited_message","callback_query","chat_member","my_chat_member"]}
         if WEBHOOK_SECRET: data["secret_token"]=WEBHOOK_SECRET
-        r=tg("setWebhook",data)
-        print(f"[{SIGNATURE}] WEBHOOK AUTO: {url} -> {r}")
+        tg("setWebhook",data)
     ativas = sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v["key_env"]))
-    print(f"[{SIGNATURE}] IAs ATIVAS: {ativas} -> {list(k for k,v in PROVIDERS_RAW.items() if os.getenv(v['key_env']))}")
+    print(f"[{SIGNATURE}] IAs ATIVAS: {ativas}")
     def bio_auto_refresh():
         while True:
             time.sleep(600)
             for cid in list(bio_cache.keys()):
-                try: get_real_bio(cid, force=True)
+                try: get_real_bio(cid, True)
                 except: pass
     threading.Thread(target=bio_auto_refresh, daemon=True).start()
-    print(f"[{SIGNATURE}] AUTO TUDO ATIVO")
 
 def get_cfg(cid):
-    if cid not in cfg_db: cfg_db[cid]=DEFAULT_CFG.copy()
+    if cid not in cfg_db:
+        cfg_db[cid]=DEFAULT_CFG.copy()
+        save_cfg_file()
     return cfg_db[cid]
 
 def get_real_bio(cid, force=False):
@@ -108,17 +123,17 @@ def get_bot_perm(cid, force=False):
 def is_admin(cid,uid):
     if str(uid)==CREATOR_ID: return True
     if MY_ID and uid==MY_ID: return True
-    try:
-        return tg("getChatMember",{"chat_id":cid,"user_id":uid}).get("result",{}).get("status") in ["administrator","creator"]
+    try: return tg("getChatMember",{"chat_id":cid,"user_id":uid}).get("result",{}).get("status") in ["administrator","creator"]
     except: return False
 
-def find_grupo_comum(uid):
+def find_todos_grupos_comum(uid):
+    achados=[]
     for cid in list(grupos_conhecidos):
         try:
             if get_bot_perm(cid)['can_delete'] and is_admin(cid, uid):
-                return cid
+                achados.append(cid)
         except: continue
-    return None
+    return achados
 
 def send(cid,text,mid=None,kb=None):
     if SIGNATURE not in text: text=f"{text}\n\n<i>{SIGNATURE}</i>"
@@ -182,7 +197,7 @@ def call_provider(provider, prompt, b64=None):
 
 def ia_analisa(cid,txt,b64,hist):
     cfg=get_cfg(cid); bio=get_real_bio(cid)
-    prompt=f"""Você é ORBIT V24 AUTO. GRUPO:{bio['name']} BIO:"{bio['bio']}" BOTOES:{json.dumps(cfg)} SEGUIR_BIO:{'ON' if cfg['seguir_bio'] else 'OFF'} HIST:{hist[-5:]} MSG:"{txt}" MIDIA:{'SIM' if b64 else 'NAO'} Analise intenção. Só viola se botão ON ou bio ON. RETORNE JSON: {{"viola":bool,"motivo":"curto","origem":"botao/bio/nenhuma","regra":"anti_link|anti_18|anti_briga|anti_flert|anti_politica|anti_venda|anti_flood|bio","confianca":0.0-1.0}}"""
+    prompt=f"""Você é ORBIT V24 AUTO. GRUPO:{bio['name']} BIO:"{bio['bio']}" BOTOES:{json.dumps(cfg)} SEGUIR_BIO:{'ON' if cfg['seguir_bio'] else 'OFF'} HIST:{hist[-5:]} MSG:"{txt}" MIDIA:{'SIM' if b64 else 'NAO'} Só viola se botão ON ou bio ON. RETORNE JSON: {{"viola":bool,"motivo":"curto","origem":"botao/bio/nenhuma","regra":"anti_link|anti_18|anti_briga|anti_flert|anti_politica|anti_venda|anti_flood|bio","confianca":0.0-1.0}}"""
     for prov in ["groq","gemini","cerebras","mistral","openrouter","cloudflare"]:
         out=call_provider(prov, prompt, b64 if prov=="gemini" else None)
         if out:
@@ -204,49 +219,55 @@ def painel_kb(cfg):
     ]}
 
 def painel_txt(cid, uid=None):
-    target_cid=cid
     is_pv = not str(cid).startswith("-")
-    if is_pv:
-        if uid:
-            comum=find_grupo_comum(uid)
-            if comum:
-                target_cid=comum
-            else:
-                return f"🤖 <b>ORBIT ADM V24.5.3</b>\nVocê e eu não somos ADM juntos em nenhum grupo.\nMe adicione como ADM em um grupo e use /painel lá primeiro.\n{SIGNATURE} | IA: {sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v['key_env']))}"
-        else:
-            target_cid=cid
-    bio=get_real_bio(target_cid); perm=get_bot_perm(target_cid); cfg=get_cfg(target_cid)
+    if is_pv and uid:
+        comuns=find_todos_grupos_comum(uid)
+        if not comuns:
+            return f"🤖 <b>ORBIT V24.5.5 PERSIST</b>\nVocê e eu não somos ADM juntos em nenhum grupo.\n{SIGNATURE} | IA: {sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v['key_env']))}"
+        if len(comuns)>1:
+            txt=f"🤖 <b>ORBIT V24.5.5</b>\nVocê é ADM em {len(comuns)} grupos:\n\n"
+            for cid_g in comuns:
+                bio=get_real_bio(cid_g); cfg=get_cfg(cid_g)
+                ativos=sum([cfg['anti_link'],cfg['anti_18'],cfg['anti_briga'],cfg['anti_flert'],cfg['anti_politica'],cfg['anti_flood'],cfg['anti_venda']])
+                txt+=f"• {bio['name']} - {ativos}/7\n"
+            txt+=f"\nEscolha abaixo:\n{SIGNATURE}"
+            return txt
+    bio=get_real_bio(cid); perm=get_bot_perm(cid); cfg=get_cfg(cid)
     ativos=sum([cfg['anti_link'],cfg['anti_18'],cfg['anti_briga'],cfg['anti_flert'],cfg['anti_politica'],cfg['anti_flood'],cfg['anti_venda']])
     ias_ativas = sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v["key_env"]))
-    origem = "PV->Grupo" if target_cid!=cid else "GRUPO" if not is_pv else "PV"
-    return f"🤖 <b>ORBIT ADM V24.5.3 [{origem}]</b>\nGrupo: {bio['name']}\nBio: {(bio['bio'][:90] or 'sem bio')}...\nEstado: {perm['state']} | {ativos}/7 | {SIGNATURE} | IA: {ias_ativas} | Calls: {AI_STATS['total_calls']}"
+    return f"🤖 <b>ORBIT V24.5.5 PERSIST</b>\nGrupo: {bio['name']}\nEstado: {perm['state']} | {ativos}/7 | {SIGNATURE} | IA: {ias_ativas} | Calls: {AI_STATS['total_calls']}"
 
 def send_painel(cid, uid=None, mid=None):
-    target_cid=cid
-    if not str(cid).startswith("-") and uid:
-        comum=find_grupo_comum(uid)
-        if comum: target_cid=comum
-    txt=painel_txt(cid, uid)
-    has_panel = "Você e eu não somos ADM" not in txt
-    kb=painel_kb(get_cfg(target_cid)) if has_panel else None
+    is_pv = not str(cid).startswith("-")
+    if is_pv and uid:
+        comuns=find_todos_grupos_comum(uid)
+        if len(comuns)>1:
+            kb={"inline_keyboard":[]}
+            for cid_g in comuns:
+                bio=get_real_bio(cid_g)
+                kb["inline_keyboard"].append([{"text":f"📁 {bio['name'][:30]}","callback_data":f"sel:{cid_g}"}])
+            send(cid, painel_txt(cid, uid), mid, kb)
+            return
+        target_cid=comuns[0] if comuns else cid
+    else: target_cid=cid
+    txt=painel_txt(target_cid, uid)
+    kb=painel_kb(get_cfg(target_cid)) if "não somos ADM" not in txt else None
     send(cid, txt, mid, kb)
 
 def handle_message(msg):
     cid=msg["chat"]["id"]; mid=msg["message_id"]; uid=msg["from"]["id"]
     txt=(msg.get("text") or msg.get("caption") or "").strip()
-    if str(cid).startswith("-"):
-        grupos_conhecidos.add(cid)
+    if str(cid).startswith("-"): grupos_conhecidos.add(cid)
     if MY_ID and uid==MY_ID: return
     if txt.startswith(("/painel","/start","/menu")):
-        if not str(cid).startswith("-"): # PV
-            send_painel(cid, uid, mid)
-            return
+        if not str(cid).startswith("-"):
+            send_painel(cid, uid, mid); return
         if not is_admin(cid,uid): send(cid,"⛔ Só ADM."); return
         get_real_bio(cid,True); get_bot_perm(cid,True); send_painel(cid, uid, mid); return
     if "new_chat_members" in msg:
         if get_cfg(cid)["welcome"]:
             for u in msg["new_chat_members"]:
-                if u["id"]!=MY_ID: send(cid,f"👋 Bem-vindo(a) {u.get('first_name','')}! Leia a descrição.")
+                if u["id"]!=MY_ID: send(cid,f"👋 Bem-vindo(a) {u.get('first_name','')}!")
         return
     if is_admin(cid,uid): return
     k=f"{cid}_{uid}"; flood_hist[k].append((time.time(), txt or "[midia]")); hist=[h[1] for h in flood_hist[k]]
@@ -262,21 +283,31 @@ def handle_message(msg):
 
 def handle_callback(q):
     cid=q["message"]["chat"]["id"]; uid=q["from"]["id"]; mid=q["message"]["message_id"]
+    d=q["data"]
+    if d.startswith("sel:"):
+        target_cid=int(d[4:])
+        if not is_admin(target_cid,uid):
+            tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Só ADM desse grupo"}); return
+        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(target_cid, uid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(get_cfg(target_cid))})
+        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Grupo selecionado"})
+        return
     target_cid=cid
     if not str(cid).startswith("-"):
-        comum=find_grupo_comum(uid)
-        if comum: target_cid=comum
+        comuns=find_todos_grupos_comum(uid)
+        if comuns: target_cid=comuns[0]
     if not is_admin(target_cid,uid): tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Só ADM","show_alert":True}); return
-    d=q["data"]; cfg=get_cfg(target_cid)
+    cfg=get_cfg(target_cid)
     if d.startswith("t:"):
         k=d[2:]
-        if k in cfg: cfg[k]=not cfg[k]
-        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(cid, uid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(cfg)})
-        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":f"{k} {'ON' if cfg[k] else 'OFF'}"})
+        if k in cfg:
+            cfg[k]=not cfg[k]
+            save_cfg_file()
+        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(target_cid, uid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(cfg)})
+        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":f"{k} {'ON' if cfg[k] else 'OFF'} - Salvo!"})
     elif d=="refresh_bio":
         get_real_bio(target_cid,True); get_bot_perm(target_cid,True)
-        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(cid, uid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(get_cfg(target_cid))})
-        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Bio atualizada AUTO!"})
+        tg("editMessageText",{"chat_id":cid,"message_id":mid,"text":painel_txt(target_cid, uid)+f"\n\n<i>{SIGNATURE}</i>","parse_mode":"HTML","reply_markup":painel_kb(get_cfg(target_cid))})
+        tg("answerCallbackQuery",{"callback_query_id":q["id"],"text":"Bio atualizada!"})
 
 @app.route("/", methods=["POST"])
 def webhook():
@@ -288,7 +319,7 @@ def webhook():
     return "ok",200
 
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT V24.5.3 AUTO {SIGNATURE} ONLINE | IA:{sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v['key_env']))}",200
+def home(): return f"ORBIT V24.5.5 PERSIST {SIGNATURE} ONLINE | Grps:{len(cfg_db)} | IA:{sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v['key_env']))}",200
 
 auto_setup()
 if __name__=="__main__":
