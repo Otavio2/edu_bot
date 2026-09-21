@@ -2,18 +2,22 @@ import os, time, json, base64, re, threading, requests
 from collections import defaultdict, deque
 from flask import Flask, request
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# FIX V24.5: aceita BOT_TOKEN ou TELEGRAM_TOKEN
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN") or ""
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN / TELEGRAM_TOKEN não encontrado no Render")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CREATOR_ID = str(os.getenv("CREATOR_ID","8398287578"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET","")
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL","") or os.getenv("WEBHOOK_URL","")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL","") or os.getenv("WEBHOOK_URL","") or os.getenv("RENDER_EXTERNAL_HOSTNAME","")
+if RENDER_URL and not RENDER_URL.startswith("http"):
+    RENDER_URL = f"https://{RENDER_URL}"
 SIGNATURE = "Kʆɛɓɛʀ"
 MY_ID = int(os.getenv("BOT_ID","0")) if os.getenv("BOT_ID") else 0
 
 app = Flask(__name__)
 sess = requests.Session()
 
-# === SUA ESTRUTURA AUTOMÁTICA ===
 PROVIDERS_RAW = {
     "groq": {"key_env": "GROQ_API_KEY", "endpoint": "https://api.groq.com/openai/v1", "format": "openai", "timeout": 6},
     "gemini": {"key_env": "GEMINI_API_KEY", "endpoint": "https://generativelanguage.googleapis.com/v1beta", "format": "gemini", "timeout": 8},
@@ -47,20 +51,24 @@ def tg(m,p):
     except: return {}
 
 def auto_setup():
-    # 1. AUTO DESCOBRE BOT ID
     global MY_ID
     if not MY_ID:
-        me=tg("getMe",{}).get("result",{})
-        MY_ID=me.get("id",0)
+        try:
+            me=tg("getMe",{}).get("result",{})
+            MY_ID=me.get("id",0)
+        except: pass
         print(f"[{SIGNATURE}] BOT ID AUTO: {MY_ID}")
-    # 2. AUTO SETA WEBHOOK
     if RENDER_URL:
         url=f"{RENDER_URL.rstrip('/')}/"
         data={"url":url, "allowed_updates":["message","edited_message","callback_query","chat_member","my_chat_member"]}
         if WEBHOOK_SECRET: data["secret_token"]=WEBHOOK_SECRET
         r=tg("setWebhook",data)
         print(f"[{SIGNATURE}] WEBHOOK AUTO: {url} -> {r}")
-    # 3. AUTO LIMPA BIO CACHE A CADA 10 MIN
+    else:
+        print(f"[{SIGNATURE}] WEBHOOK AUTO: SEM RENDER_URL")
+    # conta IAs ativas
+    ativas = sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v["key_env"]))
+    print(f"[{SIGNATURE}] IAs ATIVAS: {ativas} -> {list(k for k,v in PROVIDERS_RAW.items() if os.getenv(v['key_env']))}")
     def bio_auto_refresh():
         while True:
             time.sleep(600)
@@ -93,7 +101,9 @@ def get_bot_perm(cid, force=False):
 def is_admin(cid,uid):
     if str(uid)==CREATOR_ID: return True
     if MY_ID and uid==MY_ID: return True
-    return tg("getChatMember",{"chat_id":cid,"user_id":uid}).get("result",{}).get("status") in ["administrator","creator"]
+    try:
+        return tg("getChatMember",{"chat_id":cid,"user_id":uid}).get("result",{}).get("status") in ["administrator","creator"]
+    except: return False
 
 def send(cid,text,mid=None,kb=None):
     if SIGNATURE not in text: text=f"{text}\n\n<i>{SIGNATURE}</i>"
@@ -132,16 +142,19 @@ def call_provider(provider, prompt, b64=None):
             if cfg["format"]=="openai":
                 url=cfg["endpoint"].rstrip("/")+"/chat/completions"
                 r=s.post(url, headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":prompt}],"temperature":0.1,"max_tokens":400}, timeout=cfg["timeout"]).json()
+                AI_STATS["total_calls"]+=1
                 return r["choices"][0]["message"]["content"]
             elif cfg["format"]=="gemini":
                 url=f"{cfg['endpoint']}/models/{model}:generateContent?key={key}"
                 parts=[{"text":prompt}]
                 if b64: parts.append({"inline_data":{"mime_type":"image/jpeg","data":b64}})
                 r=s.post(url, json={"contents":[{"parts":parts}],"generationConfig":{"temperature":0.1,"maxOutputTokens":400}}, timeout=cfg["timeout"]).json()
+                AI_STATS["total_calls"]+=1
                 return r["candidates"][0]["content"]["parts"][0]["text"]
             elif cfg["format"]=="cloudflare":
                 url=cfg["endpoint"].rstrip("/")+f"{model}"
                 r=s.post(url, headers={"Authorization":f"Bearer {key}"}, json={"prompt":prompt}, timeout=cfg["timeout"]).json()
+                AI_STATS["total_calls"]+=1
                 return r.get("result",{}).get("response")
         except Exception as e:
             AI_MODEL_BLACKLIST[f"{provider}:{model}"]=time.time()+120
@@ -178,7 +191,8 @@ def painel_kb(cfg):
 def painel_txt(cid):
     bio=get_real_bio(cid); perm=get_bot_perm(cid); cfg=get_cfg(cid)
     ativos=sum([cfg['anti_link'],cfg['anti_18'],cfg['anti_briga'],cfg['anti_flert'],cfg['anti_politica'],cfg['anti_flood'],cfg['anti_venda']])
-    return f"🤖 <b>ORBIT ADM V24.3 AUTO</b>\nGrupo: {bio['name']}\nBio: {(bio['bio'][:90] or 'sem bio')}...\nEstado: {perm['state']} | {ativos}/7 | {SIGNATURE} | IA: {AI_STATS['total_calls']}"
+    ias_ativas = sum(1 for v in PROVIDERS_RAW.values() if os.getenv(v["key_env"]))
+    return f"🤖 <b>ORBIT ADM V24.5 AUTO</b>\nGrupo: {bio['name']}\nBio: {(bio['bio'][:90] or 'sem bio')}...\nEstado: {perm['state']} | {ativos}/7 | {SIGNATURE} | IA: {ias_ativas} | Calls: {AI_STATS['total_calls']}"
 
 def send_painel(cid,mid=None): send(cid,painel_txt(cid),mid,painel_kb(get_cfg(cid)))
 
@@ -230,9 +244,8 @@ def webhook():
     return "ok",200
 
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT V24.3 AUTO {SIGNATURE} ONLINE",200
+def home(): return f"ORBIT V24.5 AUTO {SIGNATURE} ONLINE",200
 
-# AUTO START
 auto_setup()
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
