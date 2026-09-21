@@ -1,33 +1,45 @@
-# 🚀 Orbit Alliance IA ADM MAX + LEARNING BEHAVIOR
+# 🛡️ ORBIT ALLIANCE ADM - Kʆɛɓɛʀ
 
-> ----- Criador: Kʆɛɓɛʀ -----
+> O primeiro ADM do Telegram com cérebro de IA que lê BIO + entende FOTO/GIF/STICKER pornô.
 
-Bot de moderação autônoma para Telegram com IA real, sistema de aprendizado por grupo e infraestrutura anti-queda.
+**Assinatura Oficial:** `Kʆɛɓɛʀ`  
+**Dono Supremo:** `8398287578`  
+**Status:** 100% ON - 1ª Base IA Visão + 2ª Base Fallback
 
-## ✨ Novidades - LEARNING
+---
 
-A IA agora aprende com o próprio grupo:
+### ⚡ O QUE ELE FAZ?
 
-- **Horário de Pico:** Conta msgs por hora (`group_peak`). Se detectar pico > 1.5x média, fica mais rígido (flood_limit cai de 7 para 3).
-- **Spammer Recorrente:** Usuário que levou 3+ deletes/mutes entra em observação (`user_reputation`). Na próxima msg já entra mutado automático.
-- **Palavras Tóxicas do Grupo:** Detecta briga (2+ tóxicos em 30s), extrai palavras em comum e salva em `group_toxic_words`. Da próxima vez apaga antes mesmo da IA geral pegar.
+Diferente de bot de comando, ele é um **ADM raiz com IA**.
 
-## 🤖 IA
+1.  **LÊ A BIO/DESCRIÇÃO:** Se na bio tá "Proibido link, +18, política" e o botão Seguir Bio ON, ele protege pela bio.
+2.  **9 BOTÕES FIXOS:** Bio, Anti-Link, Anti +18, Anti-Briga, Anti-Flert, Anti-Política, Anti-Flood, Anti-Venda, Boas-vindas.
+3.  **DETECTA MÍDIA PORNÔ:** Foto nua, vídeo, gif, sticker hentai sem legenda? **Gemini Vision** vê e apaga.
+4.  **SE A IA FALHAR - 2ª BASE:** Vira ADM tradicional e bloqueia toda mídia sem legenda se Anti +18 ON.
+5.  **NUNCA MODERA ADM:** ADM humano e BOT são ignorados. `CREATOR_ID` nunca é moderado.
 
-- **Providers:** Groq, Gemini, Cerebras com fallback automático
-- **Blacklist inteligente:** Modelo/provedor com erro é bloqueado temporariamente
-- **Scores locais:** Se IA offline, usa `ai_toxic_score`, `ai_divulgacao_score`, `ai_similarity_score`
-- **Intenção PT:** Entende "cala a boca", "bane esse", "expulsa" em português
+### Fluxo
+`MSG → É CREATOR_ID/ADM? IGNORO → Carrego Bio+Botões → IA Visão/Texto → Violação? → Regra Ativa? → Tenho permissão? → APAGO`
 
-Comando `/resetai` limpa blacklist e recarrega providers.
+---
 
-## 🛡️ Moderação
+### 🚀 DEPLOY NO RENDER (100% Grátis)
 
-- **Anti-Link:** Bloqueia domínios não permitidos (`allowed_links`)
-- **Anti-Divulgação:** IA detecta promo, cassino, pix, etc
-- **Anti-Spam:** Similaridade > 85% com últimas 5 msgs
-- **Anti-Flood:** Limite por janela (com modo pico rígido)
-- **Anti-Mention:** 5+ @ por msg ou 8 em 30s
-- **Night Mode:** `silent` (apaga tudo) ou `strict` (só msg longa)
+1.  Faça fork desse repo
+2.  No Render > New Web Service > Conecte o GitHub
+3.  **Build Command:** `pip install -r requirements.txt`
+4.  **Start Command:** `gunicorn main:app`
+5.  **Environment Variables:**
 
-## 📜 Comandos
+| Variável | Exemplo | Obrigatória |
+| :--- | :--- | :--- |
+| `BOT_TOKEN` | `123456:ABC...` | SIM |
+| `BOT_ID` | `123456789` | SIM |
+| `CREATOR_ID` | `8398287578` | SIM |
+| `WEBHOOK_SECRET` | `orbit_2025_secure_123` | SIM |
+| `GEMINI_API_KEY` | `AIza...` | SIM - Pra visão |
+| `GROQ_API_KEY` | `gsk_...` | SIM |
+| `CEREBRAS_API_KEY` | `csk_...` | Opcional |
+| `MISTRAL_API_KEY` | `...` | Opcional |
+
+6.  Após deploy, ative o webhook (1 vez no navegador):
