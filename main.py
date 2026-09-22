@@ -1,6 +1,5 @@
 import os, time, json, base64, re, threading, requests, html
 from flask import Flask, request
-
 SIGNATURE = "Kʆɛɓɛʀ"
 DONO_NOME = "Kleber"
 DONO_ID = int(os.getenv("DONO_ID","8398287578"))
@@ -11,7 +10,7 @@ BOT_ID = int(BOT_TOKEN.split(':')[0]) if ":" in BOT_TOKEN else 0
 RENDER_URL = (os.getenv("RENDER_EXTERNAL_URL","") or "https://edu-bot-6yfa.onrender.com").strip()
 if RENDER_URL and not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
 app = Flask(__name__)
-
+#... SEUS PROVIDERS CONTINUAM IGUAIS...
 PROVIDERS = {
     "gemini": {"env":"GEMINI_API_KEY","url":"https://generativelanguage.googleapis.com/v1beta","fmt":"gemini","models":["gemini-2.0-flash","gemini-1.5-flash"],"vision":True},
     "groq": {"env":"GROQ_API_KEY","url":"https://api.groq.com/openai/v1","fmt":"openai","models":["llama-3.3-70b-versatile","llama-3.2-11b-vision-preview"],"vision":True},
@@ -26,7 +25,7 @@ def get_sess():
     return thread_local.s
 def tg(m,p):
     try: return get_sess().post(f"{API}/{m}", json=p, timeout=12).json()
-    except: return {"ok":False}
+    except Exception as e: print(f"TG ERR {m}: {e}"); return {"ok":False}
 def get_bio(cid):
     try: return (tg("getChat",{"chat_id":int(cid)}).get("result",{}).get("description") or "").strip()
     except: return ""
@@ -115,19 +114,22 @@ def handle(msg):
     if f"{cid}:{mid}" in handle.seen and time.time()-handle.seen[f"{cid}:{mid}"]<10: return
     handle.seen[f"{cid}:{mid}"]=time.time()
     if len(handle.seen)>200: handle.seen={k:v for k,v in handle.seen.items() if time.time()-v<60}
-
     if uid==BOT_ID: return
-    if int(cid)>0: return
     txt=(msg.get("text") or msg.get("caption") or "").strip()
 
+    # FIX 1: COMANDOS FUNCIONAM NO PV E NO GRUPO
     if txt.startswith("/"):
-        bio=get_bio(cid)
-        if txt.split()[0].lower().split("@")[0] in ["/start","/help","/regras","/ping"]:
-            tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4 by {SIGNATURE}</b>\n{DONO_NOME} | {DONO_ID}\n100% BIO | SEM MEMORIA\n\n<b>BIO ATUAL:</b>\n{html.escape(bio)[:1200] or 'VAZIA - moderação desligada'}","parse_mode":"HTML"})
-        threading.Thread(target=lambda: (time.sleep(4), tg("deleteMessage",{"chat_id":cid,"message_id":mid})), daemon=True).start()
+        cmd=txt.split()[0].lower().split("@")[0]
+        if cmd in ["/start","/help","/regras","/ping"]:
+            if int(cid)>0:
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4.1 by {SIGNATURE}</b>\nTrabalho só em grupos.\nMe adicione como ADM com permissão de apagar.\nDev: {DONO_NOME} {DONO_ID}","parse_mode":"HTML"})
+            else:
+                bio=get_bio(cid)
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4.1 by {SIGNATURE}</b>\n{DONO_NOME} | {DONO_ID}\n100% BIO | SEM MEMORIA\n\n<b>BIO ATUAL:</b>\n{html.escape(bio)[:1200] or 'VAZIA - moderação desligada'}","parse_mode":"HTML"})
         return
 
-    # CONSELHEIRO: SÓ QUANDO ADM RECLAMA - NÃO MODERA, SÓ SUGERE
+    if int(cid)>0: return # resto só em grupo
+
     if is_admin(cid,uid) or uid==DONO_ID:
         if len(txt)>=8:
             bio=get_bio(cid)
@@ -147,42 +149,29 @@ def handle(msg):
                     except: pass
         return
 
-    # FLUXO PRINCIPAL 100% BIO
     bio=get_bio(cid)
-    if not bio: return # BIO VAZIA = NÃO MODERAR
+    if not bio: return
     b64,mime,tipo=midia(msg)
     if not txt and not b64: return
-
     ia=ia_analisa(bio, txt or "[midia]", b64, mime or "image/jpeg", tipo or "texto")
     if not ia or not ia.get("viola"): return
-
     perms=get_perms(cid)
     if not perms["del"]: print("SEM PERM DEL"); return
     if not tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok"): print("DELETE FALHOU"); return
-
     nome=html.escape(msg["from"].get("first_name",""))
     fala=html.escape(ia.get("fala","Respeite a BIO")[:200])
     trecho=html.escape(ia.get("trecho_bio","")[:180])
     pun=ia.get("punicao",{})
-
-    # BAN
     if pun.get("tipo")=="ban":
         if perms["ban"] and existe(pun.get("trecho_bio_punicao",""), bio):
             if tg("banChatMember",{"chat_id":cid,"user_id":uid}).get("ok"):
                 tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - banido\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
-            else:
-                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nMensagem removida. Punição de ban prevista na BIO não pôde ser aplicada (sem permissão/erro Telegram).\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
-    # MUTE
     if pun.get("tipo")=="mute":
         if perms["ban"] and existe(pun.get("trecho_bio_punicao",""), bio):
             dur=parse_duracao(pun.get("trecho_bio_punicao",""))
             if dur>0:
                 if tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(time.time())+dur}).get("ok"):
                     tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - silenciado\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
-                else:
-                    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nMensagem removida. Mute previsto na BIO não pôde ser aplicado.\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
-            else: print(f"MUTE SEM DURACAO VALIDA {pun.get('trecho_bio_punicao')}")
-    # SÓ DELETE
     tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"})
 
 def keep_alive():
@@ -191,18 +180,26 @@ def keep_alive():
         try:
             if RENDER_URL: get_sess().get(RENDER_URL, timeout=5)
         except: pass
+
 @app.route("/", methods=["POST"])
 def wh():
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token","")!=WEBHOOK_SECRET: return "no",403
+    # LOG PARA DEBUG
+    if WEBHOOK_SECRET:
+        sec=request.headers.get("X-Telegram-Bot-Api-Secret-Token","")
+        if sec!=WEBHOOK_SECRET:
+            print(f"SECRET MISMATCH: recebi {sec} esperado {WEBHOOK_SECRET}")
+            return "no",403
     u=request.get_json(force=True,silent=True) or {}
     if "message" in u: threading.Thread(target=handle, args=(u["message"],), daemon=True).start()
     if "edited_message" in u: threading.Thread(target=handle, args=(u["edited_message"],), daemon=True).start()
     return "ok",200
+
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT ADM V29.4 by {SIGNATURE} | 100% BIO | SEM MEMORIA | ONLINE",200
+def home(): return f"ORBIT ADM V29.4.1 by {SIGNATURE} | 100% BIO | ONLINE",200
+
 try:
     tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"]})
-    print(f"[ORBIT V29.4 by {SIGNATURE}] ONLINE")
+    print(f"[ORBIT V29.4.1 by {SIGNATURE}] ONLINE")
 except: pass
 threading.Thread(target=keep_alive, daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
