@@ -1,274 +1,208 @@
 import os, time, json, base64, re, threading, requests, html
-from collections import defaultdict, deque
 from flask import Flask, request
 
-# --- IDENTIDADE DO CRIADOR ---
 SIGNATURE = "Kʆɛɓɛʀ"
-DONO_NOME = "Kʆɛɓɛʀ"
-DONO_ID = int(os.getenv("DONO_ID", "0"))
+DONO_NOME = "Kleber"
+DONO_ID = int(os.getenv("DONO_ID","8398287578"))
 BOT_TOKEN = os.getenv("BOT_TOKEN","").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET","").strip()
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-BOT_ID = int(BOT_TOKEN.split(':')[0]) if BOT_TOKEN and ":" in BOT_TOKEN else 0
+BOT_ID = int(BOT_TOKEN.split(':')[0]) if ":" in BOT_TOKEN else 0
 RENDER_URL = (os.getenv("RENDER_EXTERNAL_URL","") or "https://edu-bot-6yfa.onrender.com").strip()
-if not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
+if RENDER_URL and not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
 app = Flask(__name__)
 
-PROVIDERS_RAW = {
-    "gemini":{"key_env":"GEMINI_API_KEY","endpoint":"https://generativelanguage.googleapis.com/v1beta","format":"gemini","vision":True},
-    "groq":{"key_env":"GROQ_API_KEY","endpoint":"https://api.groq.com/openai/v1","format":"openai","vision":True},
-    "cerebras":{"key_env":"CEREBRAS_API_KEY","endpoint":"https://api.cerebras.ai/v1","format":"openai","vision":False},
-    "openrouter":{"key_env":"OPENROUTER_API_KEY","endpoint":"https://openrouter.ai/api/v1","format":"openai","vision":True},
-    "mistral":{"key_env":"MISTRAL_API_KEY","endpoint":"https://api.mistral.ai/v1","format":"openai","vision":True},
+PROVIDERS = {
+    "gemini": {"env":"GEMINI_API_KEY","url":"https://generativelanguage.googleapis.com/v1beta","fmt":"gemini","models":["gemini-2.0-flash","gemini-1.5-flash"],"vision":True},
+    "groq": {"env":"GROQ_API_KEY","url":"https://api.groq.com/openai/v1","fmt":"openai","models":["llama-3.3-70b-versatile","llama-3.2-11b-vision-preview"],"vision":True},
+    "mistral": {"env":"MISTRAL_API_KEY","url":"https://api.mistral.ai/v1","fmt":"openai","models":["pixtral-12b-2409","mistral-large-latest"],"vision":True},
+    "openrouter": {"env":"OPENROUTER_API_KEY","url":"https://openrouter.ai/api/v1","fmt":"openai","models":["meta-llama/llama-3.1-8b-instruct:free"],"vision":True},
+    "cerebras": {"env":"CEREBRAS_API_KEY","url":"https://api.cerebras.ai/v1","fmt":"openai","models":["llama-3.3-70b"],"vision":False},
 }
-FALLBACK_MODELS = {
-    "gemini":["gemini-2.0-flash","gemini-1.5-flash"],
-    "groq":["llama-3.3-70b-versatile","llama-3.2-11b-vision-preview"],
-    "cerebras":["llama-3.3-70b"],
-    "openrouter":["meta-llama/llama-3.1-8b-instruct:free"],
-    "mistral":["mistral-large-latest","pixtral-12b-2409"]
-}
-AI_BLACK = {}; AI_PROV_BLACK = {}
-thread_local = threading.local()
+BLACK={}
+thread_local=threading.local()
 def get_sess():
-    if not hasattr(thread_local,"s"): thread_local.s = requests.Session()
+    if not hasattr(thread_local,"s"): thread_local.s=requests.Session()
     return thread_local.s
-
-bio_cache = {}; admin_cache = {}
-contexto_temporario = defaultdict(lambda: deque(maxlen=5))
-infracoes_tmp = defaultdict(list)
-CONFIANCA_MIN = 0.85
-
 def tg(m,p):
-    try:
-        r=get_sess().post(f"{API}/{m}", json=p, timeout=12)
-        return r.json()
+    try: return get_sess().post(f"{API}/{m}", json=p, timeout=12).json()
     except: return {"ok":False}
-
-def get_bio_real(cid, force=False):
-    cid=str(cid); now=time.time()
-    if not force and cid in bio_cache and now - bio_cache[cid]['t'] < 600: return bio_cache[cid]
-    ch=tg("getChat",{"chat_id":int(cid)}).get("result",{}) or {}
-    d={"name":ch.get("title",""),"bio":ch.get("description","") or "","t":now}
-    bio_cache[cid]=d
-    return d
-
-def get_adms(cid):
+def get_bio(cid):
+    try: return (tg("getChat",{"chat_id":int(cid)}).get("result",{}).get("description") or "").strip()
+    except: return ""
+def get_perms(cid):
     try:
-        adms=tg("getChatAdministrators",{"chat_id":int(cid)}).get("result",[]) or []
-        ids=[]; nomes=[]; owner=None; owner_name=""
-        for a in adms:
-            u=a.get("user",{}); uid=u.get("id")
-            if not uid: continue
-            nome=(u.get('first_name','') + (f" {u.get('last_name','')}" if u.get('last_name') else "")).strip() or str(uid)
-            if u.get('username'): nome+=f" (@{u['username']})"
-            ids.append(uid); nomes.append(nome)
-            if a.get("status")=="creator": owner=uid; owner_name=nome
-        admin_cache[str(cid)]={"owner":owner,"owner_name":owner_name,"adms":ids,"adms_nomes":nomes,"t":time.time()}
-        return admin_cache[str(cid)]
-    except: return admin_cache.get(str(cid),{"owner":None,"owner_name":"","adms":[],"adms_nomes":[],"t":0})
-
-def is_admin_real(cid,uid):
-    if uid == DONO_ID: return True
-    if uid == BOT_ID: return True
-    c=admin_cache.get(str(cid))
-    if not c or time.time()-c['t']>600: c=get_adms(cid)
-    return uid in c.get("adms",[]) or uid==c.get("owner")
-
-def get_bot_perms(cid):
-    res=tg("getChatMember",{"chat_id":int(cid),"user_id":BOT_ID}).get("result",{}) or {}
-    status=res.get("status")
-    if status=="creator": return {"delete":True,"restrict":True,"ban":True}
-    return {"delete":res.get("can_delete_messages")==True,"restrict":res.get("can_restrict_members")==True,"ban":res.get("can_restrict_members")==True}
-
-def send(cid,txt,mid=None):
-    if SIGNATURE not in txt: txt=f"{txt}\n\n<i>ADM by {SIGNATURE}</i>"
-    try: get_sess().post(f"{API}/sendMessage", json={"chat_id":cid,"text":txt[:3900],"parse_mode":"HTML","disable_web_page_preview":True,"reply_to_message_id":mid}, timeout=10)
-    except: pass
-
-def send_mention(cid,uid,nome,fala):
-    send(cid,f'<a href="tg://user?id={uid}">{html.escape(nome or "usuário")}</a> {html.escape(fala or "")}')
-
-def get_file_data(fid):
+        r=tg("getChatMember",{"chat_id":int(cid),"user_id":BOT_ID}).get("result",{}) or {}
+        if r.get("status")=="creator": return {"del":True,"ban":True}
+        return {"del":bool(r.get("can_delete_messages")), "ban":bool(r.get("can_restrict_members"))}
+    except: return {"del":False,"ban":False}
+def is_admin(cid,uid):
+    if uid==BOT_ID or uid==DONO_ID: return True
+    try: return any(a.get("user",{}).get("id")==uid for a in tg("getChatAdministrators",{"chat_id":int(cid)}).get("result",[]) or [])
+    except: return False
+def get_b64(fid):
     try:
         fp=tg("getFile",{"file_id":fid}).get("result",{}).get("file_path")
         if not fp: return None,None
-        mime="image/jpeg"
-        if fp.lower().endswith(".png"): mime="image/png"
-        elif fp.lower().endswith(".webp"): mime="image/webp"
-        data=get_sess().get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}", timeout=15).content
-        if len(data)>5000000: return None,None
-        return base64.b64encode(data).decode(), mime
+        d=get_sess().get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{fp}", timeout=12).content
+        if len(d)>4000000: return None,None
+        mime="image/png" if fp.endswith(".png") else "image/webp" if fp.endswith(".webp") else "image/jpeg"
+        return base64.b64encode(d).decode(), mime
     except: return None,None
-
-def extrair_midia(msg):
-    if msg.get("photo"):
-        b,m=get_file_data(msg["photo"][-1]["file_id"])
-        return b,m or "image/jpeg", "photo"
-    if msg.get("sticker"):
-        st=msg["sticker"]
-        if st.get("is_animated") or st.get("is_video"): return None,None,None
-        fid=st.get("thumbnail",{}).get("file_id") or st.get("file_id")
-        b,m=get_file_data(fid) if fid else (None,None)
-        return b,m or "image/webp", f"sticker {st.get('emoji','')}" if b else (None,None,None)
-    if msg.get("animation"):
-        fid=msg["animation"].get("thumbnail",{}).get("file_id")
-        b,m=get_file_data(fid) if fid else (None,None)
-        return b,m or "image/jpeg", "gif" if b else (None,None,None)
-    if msg.get("video"):
-        fid=msg["video"].get("thumbnail",{}).get("file_id")
-        b,m=get_file_data(fid) if fid else (None,None)
-        return b,m or "image/jpeg", "video" if b else (None,None,None)
+def midia(msg):
+    if msg.get("photo"): b,m=get_b64(msg["photo"][-1]["file_id"]); return b,m,"foto"
+    if msg.get("sticker") and not msg["sticker"].get("is_animated") and not msg["sticker"].get("is_video"):
+        fid=msg["sticker"].get("thumbnail",{}).get("file_id") or msg["sticker"].get("file_id")
+        b,m=get_b64(fid) if fid else (None,None); return b,m,"sticker"
+    if msg.get("animation"): fid=msg["animation"].get("thumbnail",{}).get("file_id"); b,m=get_b64(fid) if fid else (None,None); return b,m,"gif"
     return None,None,None
-
 def call_ia(prompt,b64=None,mime="image/jpeg"):
-    for prov in ["gemini","groq","mistral","openrouter","cerebras"]:
-        if AI_PROV_BLACK.get(prov,0)>time.time(): continue
-        key=os.getenv(PROVIDERS_RAW[prov]["key_env"])
-        if not key: continue
-        if b64 and not PROVIDERS_RAW[prov]["vision"]: continue
-        for model in FALLBACK_MODELS[prov]:
-            if AI_BLACK.get(f"{prov}:{model}",0)>time.time(): continue
+    for prov,cfg in PROVIDERS.items():
+        key=os.getenv(cfg["env"])
+        if not key or (b64 and not cfg["vision"]): continue
+        for model in cfg["models"]:
+            if BLACK.get(f"{prov}:{model}",0)>time.time(): continue
             try:
-                s=get_sess()
-                if PROVIDERS_RAW[prov]["format"]=="openai":
-                    content=[{"type":"text","text":prompt}]
-                    if b64: content.append({"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}})
-                    r=s.post(f"{PROVIDERS_RAW[prov]['endpoint']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":content}],"temperature":0.1,"max_tokens":800}, timeout=15)
-                    if r.status_code in [401,403]: AI_PROV_BLACK[prov]=time.time()+600; break
-                    if r.status_code==429 or r.status_code>=500: AI_BLACK[f"{prov}:{model}"]=time.time()+180; continue
-                    txt=r.json()["choices"][0]["message"]["content"]
-                    if txt: return txt
+                if cfg["fmt"]=="openai":
+                    c=[{"type":"text","text":prompt}]
+                    if b64: c.append({"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}})
+                    r=get_sess().post(f"{cfg['url']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":c}],"temperature":0.05,"max_tokens":800}, timeout=18)
                 else:
-                    parts=[{"text":prompt}]
-                    if b64: parts.append({"inline_data":{"mime_type":mime,"data":b64}})
-                    r=s.post(f"{PROVIDERS_RAW[prov]['endpoint']}/models/{model}:generateContent?key={key}", json={"contents":[{"parts":parts}]}, timeout=15)
-                    if r.status_code in [401,403]: AI_PROV_BLACK[prov]=time.time()+600; break
-                    if r.status_code==429 or r.status_code>=500: AI_BLACK[f"{prov}:{model}"]=time.time()+180; continue
-                    txt=r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    if txt: return txt
-            except: AI_BLACK[f"{prov}:{model}"]=time.time()+120; continue
+                    p=[{"text":prompt}]
+                    if b64: p.append({"inline_data":{"mime_type":mime,"data":b64}})
+                    r=get_sess().post(f"{cfg['url']}/models/{model}:generateContent?key={key}", json={"contents":[{"parts":p}]}, timeout=18)
+                if r.status_code in [400,401,403,429]: BLACK[f"{prov}:{model}"]=time.time()+600; continue
+                if r.status_code>=500: BLACK[f"{prov}:{model}"]=time.time()+180; continue
+                j=r.json()
+                txt=j["choices"][0]["message"]["content"] if cfg["fmt"]=="openai" else j["candidates"][0]["content"]["parts"][0]["text"]
+                if txt and len(txt)>5: return txt
+            except: BLACK[f"{prov}:{model}"]=time.time()+120; continue
     return None
-
-def validar_literal(trecho,bio):
-    if not trecho or not bio: return False
-    return trecho.strip() in bio
-
-def ia_analisa(cid,txt,b64,mime,tipo,hist):
-    bio=get_bio_real(cid)
-    bio_txt=bio['bio']
-    if not bio_txt.strip(): return None
-    prompt=f"""Você é ADM do grupo "{bio['name']}". BIO OFICIAL: "{bio_txt}" MENSAGEM: Texto="{(txt or '')[:1000]}" Midia={tipo} Historico={hist[-3:]} REGRAS: Entenda significado, não keyword. trecho_bio deve ser COPIADO LITERAL da BIO. Responda idioma usuario. JSON: {{"viola":bool,"regra":"resumo","trecho_bio":"literal da bio","fala":"curta humano","confianca":0-1,"punicao":{{"tipo":"none|mute|ban","quando":"none|reincidencia|imediato","duracao_segundos":0,"trecho_bio":"literal ou vazio"}}}}"""
+def existe(t,b): return t and len(t.strip())>=4 and t.strip() in b
+def parse_duracao(t):
+    if not t: return 0
+    s=t.lower()
+    m=re.search(r'(\d+)\s*(segundo|segundos|seg|minuto|minutos|min|hora|horas|h|dia|dias|d)', s)
+    if not m:
+        m2=re.search(r'(\d+)\s*(s|m|h|d)\b', s)
+        if not m2: return 0
+        n=int(m2.group(1)); u=m2.group(2)
+        return n if u=="s" else n*60 if u=="m" else n*3600 if u=="h" else n*86400
+    n=int(m.group(1)); u=m.group(2)
+    if "seg" in u: return n
+    if "min" in u: return n*60
+    if "hora" in u or u=="h": return n*3600
+    if "dia" in u or u=="d": return n*86400
+    return 0
+def ia_analisa(bio, texto, b64, mime, tipo):
+    prompt=f'BIO LEI: "{bio}"\nMENSAGEM: "{texto[:1200]}" Midia={tipo}\nVocê só interpreta BIO. Se viola, copie trecho LITERAL da BIO em trecho_bio. Punição só se BIO falar explicitamente ban/banir/mute/silenciar com trecho literal em trecho_bio_punicao. Se dúvida, viola=false.\nJSON: {{"viola":bool,"trecho_bio":"","fala":"","confianca":0.0-1.0,"punicao":{{"tipo":"none|ban|mute","trecho_bio_punicao":""}}}}'
     out=call_ia(prompt,b64,mime)
     if not out: return None
     try:
-        m=re.search(r'\{.*\}',out,re.DOTALL)
-        j=json.loads(m.group())
-        if j.get("viola") and not validar_literal(j.get("trecho_bio",""), bio_txt): return None
-        if j.get("punicao",{}).get("trecho_bio") and not validar_literal(j["punicao"]["trecho_bio"], bio_txt): j["punicao"]["trecho_bio"]=""
+        j=json.loads(re.search(r'\{.*\}',out,re.DOTALL).group())
+        if j.get("viola"):
+            if not existe(j.get("trecho_bio",""), bio): print(f"HALLUCINACAO BIO {j.get('trecho_bio')}"); return None
+            if j.get("confianca",0) < 0.85: return None
+            p=j.get("punicao",{})
+            if p.get("tipo") in ["ban","mute"] and not existe(p.get("trecho_bio_punicao",""), bio): j["punicao"]["tipo"]="none"
+        if "viola" not in j: return None
         return j
     except: return None
 
-def handle_message(msg):
+def handle(msg):
     cid=msg["chat"]["id"]; mid=msg.get("message_id"); uid=msg["from"]["id"]
+    if not hasattr(handle,"seen"): handle.seen={}
+    if f"{cid}:{mid}" in handle.seen and time.time()-handle.seen[f"{cid}:{mid}"]<10: return
+    handle.seen[f"{cid}:{mid}"]=time.time()
+    if len(handle.seen)>200: handle.seen={k:v for k,v in handle.seen.items() if time.time()-v<60}
+
+    if uid==BOT_ID: return
+    if int(cid)>0: return
     txt=(msg.get("text") or msg.get("caption") or "").strip()
-    if uid in [BOT_ID, DONO_ID]: return
-    if str(cid).startswith("-") and str(cid) not in admin_cache: get_adms(cid)
 
     if txt.startswith("/"):
-        cmd=txt.split()[0].lower().split("@")[0]
-        if cmd in ["/start","/regras","/status","/ping","/id","/reload","/help"]:
-            b=get_bio_real(cid,True); ad=get_adms(cid); perms=get_bot_perms(cid)
-            if cmd in ["/start","/help"]:
-                send(cid,f"""🤖 <b>ORBIT ADM by {SIGNATURE} V28 - ADM HUMANO</b>
-
-<b>O QUE EU FAÇO:</b>
-Leio a DESCRIÇÃO (BIO) do grupo e apago sozinho tudo que viola.
-Entendo texto, foto, gif, sticker e vídeo. Falo no idioma da pessoa.
-
-<b>COMO ME COLOCAR NO GRUPO:</b>
-1️⃣ Me adicione como ADM com <b>Apagar Mensagens + Banir usuários</b>
-2️⃣ Escreva as regras na <b>Descrição do grupo</b>. Ex:
-<i>Proibido política, pornografia, nudez, sticker +18, divulgação de links, spam e briga.
-Na reincidência, silenciar por 1 hora.
-Quem divulgar conteúdo proibido repetidamente será banido.</i>
-3️⃣ Pronto. Eu leio a BIO sozinho.
-
-<b>COMANDOS:</b>
-/regras - mostra a BIO que estou lendo
-/status - ve se tenho permissão
-/reload - recarrega a BIO (só ADM)
-/ping - teste
-/id - seu ID
-
-<b>NOTA:</b> Se a BIO estiver vazia, não modero. Tudo precisa estar escrito na descrição.
-
-<b>Criador:</b> {DONO_NOME} by {SIGNATURE}
-<b>Status:</b> Del:{'✅' if perms['delete'] else '❌'} Ban:{'✅' if perms['ban'] else '❌'}
-""",mid); return
-            if cmd=="/regras":
-                bio_show = html.escape(b['bio']) if b['bio'] else "⚠️ BIO VAZIA - Escreva as regras na Descrição do grupo!"
-                send(cid,f"📜 <b>BIO QUE ESTOU LENDO:</b>\n\n{bio_show}\n\n<i>Edite a descrição do grupo e dê /reload</i>",mid); return
-            if cmd=="/status":
-                ia_ok = any(os.getenv(PROVIDERS_RAW[p]["key_env"]) for p in PROVIDERS_RAW)
-                send(cid,f"🟢 <b>V28 by {SIGNATURE}</b>\nBio:{'✅' if b['bio'] else '❌ Vazia'}\nApagar:{'✅' if perms['delete'] else '❌'}\nBanir:{'✅' if perms['ban'] else '❌'}\nIA:{'✅' if ia_ok else '❌'}\nDono:{DONO_NOME}",mid); return
-            if cmd=="/ping": send(cid,f"🏓 Pong V28 by {SIGNATURE}",mid); return
-            if cmd=="/id": send(cid,f"Você:<code>{uid}</code> Chat:<code>{cid}</code> Dono:<code>{DONO_ID}</code>",mid); return
-            if cmd=="/reload" and is_admin_real(cid,uid): get_bio_real(cid,True); get_adms(cid); send(cid,"🔄 Recarregado by "+SIGNATURE,mid); return
+        bio=get_bio(cid)
+        if txt.split()[0].lower().split("@")[0] in ["/start","/help","/regras","/ping"]:
+            tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4 by {SIGNATURE}</b>\n{DONO_NOME} | {DONO_ID}\n100% BIO | SEM MEMORIA\n\n<b>BIO ATUAL:</b>\n{html.escape(bio)[:1200] or 'VAZIA - moderação desligada'}","parse_mode":"HTML"})
+        threading.Thread(target=lambda: (time.sleep(4), tg("deleteMessage",{"chat_id":cid,"message_id":mid})), daemon=True).start()
         return
 
-    if str(cid).startswith("-") and is_admin_real(cid,uid): return
-    bio=get_bio_real(cid)
-    if not bio['bio'].strip(): return
-    k=f"{cid}_{uid}"; contexto_temporario[k].append(txt or "[midia]"); hist=list(contexto_temporario[k])
-    b64,mime,tipo=extrair_midia(msg)
+    # CONSELHEIRO: SÓ QUANDO ADM RECLAMA - NÃO MODERA, SÓ SUGERE
+    if is_admin(cid,uid) or uid==DONO_ID:
+        if len(txt)>=8:
+            bio=get_bio(cid)
+            if bio:
+                prompt=f'BIO ATUAL: "{bio}"\nADM FALOU: "{txt[:800]}"\nO ADM está reclamando de um comportamento no grupo (link, briga, flood, porn, divulgação, ofensa, spam)? Se SIM e isso NÃO está na BIO, sugira regra curta.\nJSON: {{"sugerir":bool,"categoria":"link|briga|flood|porn|divulgacao|ofensa|spam|outro","motivo":"curto","sugestao_bio":"Ex: Proibido brigas. Brigas = mute 30 minutos."}}'
+                out=call_ia(prompt,None,None)
+                if out:
+                    try:
+                        j=json.loads(re.search(r'\{.*\}',out,re.DOTALL).group())
+                        if j.get("sugerir") and j.get("sugestao_bio"):
+                            if not hasattr(handle,"last_tip"): handle.last_tip={}
+                            if handle.last_tip.get(cid,0) < time.time()-600:
+                                handle.last_tip[cid]=time.time()
+                                sug=html.escape(j.get("sugestao_bio","")); motivo=html.escape(j.get("motivo","")); cat=html.escape(j.get("categoria",""))
+                                nome=html.escape(msg["from"].get("first_name","ADM"))
+                                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> entendi 👍 Você reclamou de <b>{cat}</b>: {motivo}\n\nIsso ainda não está na BIO, por isso não agi antes.\n\n💡 Adicione na descrição do grupo:\n<code>{sug}</code>\n\nAí eu já cuido automático por vocês.\nADM by {SIGNATURE}',"parse_mode":"HTML"})
+                    except: pass
+        return
+
+    # FLUXO PRINCIPAL 100% BIO
+    bio=get_bio(cid)
+    if not bio: return # BIO VAZIA = NÃO MODERAR
+    b64,mime,tipo=midia(msg)
     if not txt and not b64: return
-    ia=ia_analisa(cid,txt,b64,mime or "image/jpeg",tipo,hist)
-    if not ia or ia.get("viola") is not True or ia.get("confianca",0) < CONFIANCA_MIN: return
-    if not validar_literal(ia.get("trecho_bio",""), bio['bio']): return
-    perms=get_bot_perms(cid)
-    if not perms["delete"]: return
-    if not tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok"): return
-    nome=msg['from'].get('first_name',''); fala=ia.get('fala') or "Respeite as regras"
-    pun=ia.get("punicao",{}) or {}
-    if pun.get("tipo") in ["ban","mute"] and pun.get("trecho_bio"):
-        agora=time.time()
-        infracoes_tmp[(str(cid),uid)]=[t for t in infracoes_tmp[(str(cid),uid)] if agora-t<86400]
-        infracoes_tmp[(str(cid),uid)].append(agora)
-        if pun.get("quando")=="reincidencia" and len(infracoes_tmp[(str(cid),uid)])<2:
-            send_mention(cid,uid,nome,fala); return
-        if pun["tipo"]=="ban" and perms["ban"]:
-            tg("banChatMember",{"chat_id":cid,"user_id":uid}); send_mention(cid,uid,nome,f"{fala} - ban"); return
-        if pun["tipo"]=="mute" and perms["restrict"] and pun.get("duracao_segundos",0)>0:
-            tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(agora)+pun["duracao_segundos"]})
-            send_mention(cid,uid,nome,f"{fala} - mute {pun['duracao_segundos']//60}min"); return
-    send_mention(cid,uid,nome,fala)
+
+    ia=ia_analisa(bio, txt or "[midia]", b64, mime or "image/jpeg", tipo or "texto")
+    if not ia or not ia.get("viola"): return
+
+    perms=get_perms(cid)
+    if not perms["del"]: print("SEM PERM DEL"); return
+    if not tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok"): print("DELETE FALHOU"); return
+
+    nome=html.escape(msg["from"].get("first_name",""))
+    fala=html.escape(ia.get("fala","Respeite a BIO")[:200])
+    trecho=html.escape(ia.get("trecho_bio","")[:180])
+    pun=ia.get("punicao",{})
+
+    # BAN
+    if pun.get("tipo")=="ban":
+        if perms["ban"] and existe(pun.get("trecho_bio_punicao",""), bio):
+            if tg("banChatMember",{"chat_id":cid,"user_id":uid}).get("ok"):
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - banido\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
+            else:
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nMensagem removida. Punição de ban prevista na BIO não pôde ser aplicada (sem permissão/erro Telegram).\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
+    # MUTE
+    if pun.get("tipo")=="mute":
+        if perms["ban"] and existe(pun.get("trecho_bio_punicao",""), bio):
+            dur=parse_duracao(pun.get("trecho_bio_punicao",""))
+            if dur>0:
+                if tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(time.time())+dur}).get("ok"):
+                    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - silenciado\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
+                else:
+                    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nMensagem removida. Mute previsto na BIO não pôde ser aplicado.\nADM by {SIGNATURE}',"parse_mode":"HTML"}); return
+            else: print(f"MUTE SEM DURACAO VALIDA {pun.get('trecho_bio_punicao')}")
+    # SÓ DELETE
+    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nADM by {SIGNATURE}',"parse_mode":"HTML"})
 
 def keep_alive():
     while True:
-        time.sleep(300)
+        time.sleep(240)
         try:
-            requests.get(RENDER_URL, timeout=5)
-            agora=time.time()
-            for k in list(infracoes_tmp.keys()):
-                infracoes_tmp[k]=[t for t in infracoes_tmp[k] if agora-t<86400]
-                if not infracoes_tmp[k]: del infracoes_tmp[k]
+            if RENDER_URL: get_sess().get(RENDER_URL, timeout=5)
         except: pass
-
 @app.route("/", methods=["POST"])
-def webhook():
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token","")!=WEBHOOK_SECRET: return "forbidden",403
-    u=request.get_json(force=True, silent=True) or {}
-    if "message" in u: threading.Thread(target=handle_message, args=(u["message"],), daemon=True).start()
-    elif "edited_message" in u: threading.Thread(target=handle_message, args=(u["edited_message"],), daemon=True).start()
+def wh():
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token","")!=WEBHOOK_SECRET: return "no",403
+    u=request.get_json(force=True,silent=True) or {}
+    if "message" in u: threading.Thread(target=handle, args=(u["message"],), daemon=True).start()
+    if "edited_message" in u: threading.Thread(target=handle, args=(u["edited_message"],), daemon=True).start()
     return "ok",200
-
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT ADM by {SIGNATURE} V28.1 EXPLICATIVO | Dono:{DONO_NOME} ID:{DONO_ID} ONLINE",200
-
+def home(): return f"ORBIT ADM V29.4 by {SIGNATURE} | 100% BIO | SEM MEMORIA | ONLINE",200
 try:
-    tg("setWebhook",{"url":f"{RENDER_URL.rstrip('/')}/","allowed_updates":["message","edited_message"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL.rstrip('/')}/","allowed_updates":["message","edited_message"]})
-    print(f"[ADM by {SIGNATURE}] V28.1 ONLINE Dono:{DONO_NOME} ID:{DONO_ID}")
-except Exception as e: print(f"WEBHOOK ERR {e}")
+    tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"]})
+    print(f"[ORBIT V29.4 by {SIGNATURE}] ONLINE")
+except: pass
 threading.Thread(target=keep_alive, daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
