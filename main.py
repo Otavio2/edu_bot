@@ -1,4 +1,4 @@
-import os, time, json, base64, re, threading, requests, html
+import os, time, json, base64, re, threading, requests, html, random
 from flask import Flask, request
 SIGNATURE = "Kʆɛɓɛʀ"
 DONO_NOME = "Kleber"
@@ -10,7 +10,7 @@ BOT_ID = int(BOT_TOKEN.split(':')[0]) if ":" in BOT_TOKEN else 0
 RENDER_URL = (os.getenv("RENDER_EXTERNAL_URL","") or "https://edu-bot-6yfa.onrender.com").strip()
 if RENDER_URL and not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
 app = Flask(__name__)
-#... SEUS PROVIDERS CONTINUAM IGUAIS...
+
 PROVIDERS = {
     "gemini": {"env":"GEMINI_API_KEY","url":"https://generativelanguage.googleapis.com/v1beta","fmt":"gemini","models":["gemini-2.0-flash","gemini-1.5-flash"],"vision":True},
     "groq": {"env":"GROQ_API_KEY","url":"https://api.groq.com/openai/v1","fmt":"openai","models":["llama-3.3-70b-versatile","llama-3.2-11b-vision-preview"],"vision":True},
@@ -55,7 +55,7 @@ def midia(msg):
         b,m=get_b64(fid) if fid else (None,None); return b,m,"sticker"
     if msg.get("animation"): fid=msg["animation"].get("thumbnail",{}).get("file_id"); b,m=get_b64(fid) if fid else (None,None); return b,m,"gif"
     return None,None,None
-def call_ia(prompt,b64=None,mime="image/jpeg"):
+def call_ia(prompt,b64=None,mime="image/jpeg", temp=0.05):
     for prov,cfg in PROVIDERS.items():
         key=os.getenv(cfg["env"])
         if not key or (b64 and not cfg["vision"]): continue
@@ -65,7 +65,7 @@ def call_ia(prompt,b64=None,mime="image/jpeg"):
                 if cfg["fmt"]=="openai":
                     c=[{"type":"text","text":prompt}]
                     if b64: c.append({"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}})
-                    r=get_sess().post(f"{cfg['url']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":c}],"temperature":0.05,"max_tokens":800}, timeout=18)
+                    r=get_sess().post(f"{cfg['url']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":c}],"temperature":temp,"max_tokens":800}, timeout=18)
                 else:
                     p=[{"text":prompt}]
                     if b64: p.append({"inline_data":{"mime_type":mime,"data":b64}})
@@ -95,7 +95,7 @@ def parse_duracao(t):
     return 0
 def ia_analisa(bio, texto, b64, mime, tipo):
     prompt=f'BIO LEI: "{bio}"\nMENSAGEM: "{texto[:1200]}" Midia={tipo}\nVocê só interpreta BIO. Se viola, copie trecho LITERAL da BIO em trecho_bio. Punição só se BIO falar explicitamente ban/banir/mute/silenciar com trecho literal em trecho_bio_punicao. Se dúvida, viola=false.\nJSON: {{"viola":bool,"trecho_bio":"","fala":"","confianca":0.0-1.0,"punicao":{{"tipo":"none|ban|mute","trecho_bio_punicao":""}}}}'
-    out=call_ia(prompt,b64,mime)
+    out=call_ia(prompt,b64,mime, temp=0.05)
     if not out: return None
     try:
         j=json.loads(re.search(r'\{.*\}',out,re.DOTALL).group())
@@ -117,25 +117,39 @@ def handle(msg):
     if uid==BOT_ID: return
     txt=(msg.get("text") or msg.get("caption") or "").strip()
 
-    # FIX 1: COMANDOS FUNCIONAM NO PV E NO GRUPO
+    # === BEM VINDO PURA IA - NUNCA REPETE ===
+    if msg.get("new_chat_members"):
+        bio=get_bio(cid)
+        if bio and any(x in bio.lower() for x in ["bem vindo","bem-vindo","bemvindo","boas vindas","seja bem"]):
+            for m in msg["new_chat_members"]:
+                if m["id"]==BOT_ID: continue
+                nome=m.get("first_name","")
+                estilos=["curta e hype","acolhedora e lounge","zoeira leve","elegante e premium","descolada"]
+                vibe=random.choice(estilos)
+                prompt=f'Você é o ADM de boas-vindas deste grupo.\nBIO: "{bio}"\nNOVO MEMBRO: {nome}\nTarefa: Crie UMA mensagem de boas-vindas ÚNICA, estilo {vibe}, inspirada 100% na BIO. Use os mesmos emojis/vibe da BIO. Não repita frases prontas. Seja humano. Mencione o que o grupo valoriza segundo a BIO. Máx 3 linhas. Não invente regras que não estão na BIO. Proibido falar "leia as regras".'
+                welcome=call_ia(prompt, temp=0.95)
+                if not welcome or len(welcome)<10:
+                    welcome=f"👋 {nome}, seja bem-vindo à órbita! {bio[:250]}"
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={m["id"]}">{html.escape(nome)}</a> {html.escape(welcome)[:900]}\n\nADM by {SIGNATURE}',"parse_mode":"HTML"})
+        return
+
     if txt.startswith("/"):
         cmd=txt.split()[0].lower().split("@")[0]
         if cmd in ["/start","/help","/regras","/ping"]:
             if int(cid)>0:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4.1 by {SIGNATURE}</b>\nTrabalho só em grupos.\nMe adicione como ADM com permissão de apagar.\nDev: {DONO_NOME} {DONO_ID}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.5 by {SIGNATURE}</b>\nTrabalho só em grupos.\nMe adicione como ADM com permissão de apagar.\nDev: {DONO_NOME} {DONO_ID}","parse_mode":"HTML"})
             else:
                 bio=get_bio(cid)
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.4.1 by {SIGNATURE}</b>\n{DONO_NOME} | {DONO_ID}\n100% BIO | SEM MEMORIA\n\n<b>BIO ATUAL:</b>\n{html.escape(bio)[:1200] or 'VAZIA - moderação desligada'}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V29.5 by {SIGNATURE}</b>\n{DONO_NOME} | {DONO_ID}\n100% BIO | PURA IA\n\n<b>BIO ATUAL:</b>\n{html.escape(bio)[:1200] or 'VAZIA - moderação desligada'}","parse_mode":"HTML"})
         return
 
-    if int(cid)>0: return # resto só em grupo
-
+    if int(cid)>0: return
     if is_admin(cid,uid) or uid==DONO_ID:
         if len(txt)>=8:
             bio=get_bio(cid)
             if bio:
                 prompt=f'BIO ATUAL: "{bio}"\nADM FALOU: "{txt[:800]}"\nO ADM está reclamando de um comportamento no grupo (link, briga, flood, porn, divulgação, ofensa, spam)? Se SIM e isso NÃO está na BIO, sugira regra curta.\nJSON: {{"sugerir":bool,"categoria":"link|briga|flood|porn|divulgacao|ofensa|spam|outro","motivo":"curto","sugestao_bio":"Ex: Proibido brigas. Brigas = mute 30 minutos."}}'
-                out=call_ia(prompt,None,None)
+                out=call_ia(prompt, temp=0.1)
                 if out:
                     try:
                         j=json.loads(re.search(r'\{.*\}',out,re.DOTALL).group())
@@ -156,8 +170,8 @@ def handle(msg):
     ia=ia_analisa(bio, txt or "[midia]", b64, mime or "image/jpeg", tipo or "texto")
     if not ia or not ia.get("viola"): return
     perms=get_perms(cid)
-    if not perms["del"]: print("SEM PERM DEL"); return
-    if not tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok"): print("DELETE FALHOU"); return
+    if not perms["del"]: return
+    if not tg("deleteMessage",{"chat_id":cid,"message_id":mid}).get("ok"): return
     nome=html.escape(msg["from"].get("first_name",""))
     fala=html.escape(ia.get("fala","Respeite a BIO")[:200])
     trecho=html.escape(ia.get("trecho_bio","")[:180])
@@ -183,23 +197,18 @@ def keep_alive():
 
 @app.route("/", methods=["POST"])
 def wh():
-    # LOG PARA DEBUG
     if WEBHOOK_SECRET:
         sec=request.headers.get("X-Telegram-Bot-Api-Secret-Token","")
-        if sec!=WEBHOOK_SECRET:
-            print(f"SECRET MISMATCH: recebi {sec} esperado {WEBHOOK_SECRET}")
-            return "no",403
+        if sec!=WEBHOOK_SECRET: return "no",403
     u=request.get_json(force=True,silent=True) or {}
     if "message" in u: threading.Thread(target=handle, args=(u["message"],), daemon=True).start()
     if "edited_message" in u: threading.Thread(target=handle, args=(u["edited_message"],), daemon=True).start()
     return "ok",200
-
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT ADM V29.4.1 by {SIGNATURE} | 100% BIO | ONLINE",200
-
+def home(): return f"ORBIT ADM V29.5 by {SIGNATURE} | 100% BIO PURA IA | ONLINE",200
 try:
     tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message"]})
-    print(f"[ORBIT V29.4.1 by {SIGNATURE}] ONLINE")
+    print(f"[ORBIT V29.5 by {SIGNATURE}] ONLINE")
 except: pass
 threading.Thread(target=keep_alive, daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
