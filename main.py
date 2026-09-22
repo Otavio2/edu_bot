@@ -177,15 +177,44 @@ def handle_message(msg):
 
     if txt.startswith("/"):
         cmd=txt.split()[0].lower().split("@")[0]
-        if cmd in ["/start","/regras","/status","/ping","/id","/reload"]:
+        if cmd in ["/start","/regras","/status","/ping","/id","/reload","/help"]:
             b=get_bio_real(cid,True); ad=get_adms(cid); perms=get_bot_perms(cid)
-            if cmd=="/start":
-                send(cid,f"🤖 <b>ADM by {SIGNATURE} V28</b>\n<b>{html.escape(b['name'])}</b>\nBio: {html.escape(b['bio'][:800]) or 'Vazia'}\n\nDono: {DONO_NOME} ID:{DONO_ID}\nDel:{'✅' if perms['delete'] else '❌'}",mid); return
-            if cmd=="/regras": send(cid,f"📜 {html.escape(b['bio'])}",mid); return
-            if cmd=="/status": send(cid,f"🟢 V28 by {SIGNATURE}\nBio:{'✅' if b['bio'] else '❌'}\nIA:✅\nDono:{DONO_NOME}",mid); return
-            if cmd=="/ping": send(cid,f"🏓 V28 Pong by {SIGNATURE}",mid); return
-            if cmd=="/id": send(cid,f"Você:{uid} Chat:{cid} Dono:{DONO_ID}",mid); return
-            if cmd=="/reload" and is_admin_real(cid,uid): get_bio_real(cid,True); get_adms(cid); send(cid,"🔄 Reload by "+SIGNATURE,mid); return
+            if cmd in ["/start","/help"]:
+                send(cid,f"""🤖 <b>ORBIT ADM by {SIGNATURE} V28 - ADM HUMANO</b>
+
+<b>O QUE EU FAÇO:</b>
+Leio a DESCRIÇÃO (BIO) do grupo e apago sozinho tudo que viola.
+Entendo texto, foto, gif, sticker e vídeo. Falo no idioma da pessoa.
+
+<b>COMO ME COLOCAR NO GRUPO:</b>
+1️⃣ Me adicione como ADM com <b>Apagar Mensagens + Banir usuários</b>
+2️⃣ Escreva as regras na <b>Descrição do grupo</b>. Ex:
+<i>Proibido política, pornografia, nudez, sticker +18, divulgação de links, spam e briga.
+Na reincidência, silenciar por 1 hora.
+Quem divulgar conteúdo proibido repetidamente será banido.</i>
+3️⃣ Pronto. Eu leio a BIO sozinho.
+
+<b>COMANDOS:</b>
+/regras - mostra a BIO que estou lendo
+/status - ve se tenho permissão
+/reload - recarrega a BIO (só ADM)
+/ping - teste
+/id - seu ID
+
+<b>NOTA:</b> Se a BIO estiver vazia, não modero. Tudo precisa estar escrito na descrição.
+
+<b>Criador:</b> {DONO_NOME} by {SIGNATURE}
+<b>Status:</b> Del:{'✅' if perms['delete'] else '❌'} Ban:{'✅' if perms['ban'] else '❌'}
+""",mid); return
+            if cmd=="/regras":
+                bio_show = html.escape(b['bio']) if b['bio'] else "⚠️ BIO VAZIA - Escreva as regras na Descrição do grupo!"
+                send(cid,f"📜 <b>BIO QUE ESTOU LENDO:</b>\n\n{bio_show}\n\n<i>Edite a descrição do grupo e dê /reload</i>",mid); return
+            if cmd=="/status":
+                ia_ok = any(os.getenv(PROVIDERS_RAW[p]["key_env"]) for p in PROVIDERS_RAW)
+                send(cid,f"🟢 <b>V28 by {SIGNATURE}</b>\nBio:{'✅' if b['bio'] else '❌ Vazia'}\nApagar:{'✅' if perms['delete'] else '❌'}\nBanir:{'✅' if perms['ban'] else '❌'}\nIA:{'✅' if ia_ok else '❌'}\nDono:{DONO_NOME}",mid); return
+            if cmd=="/ping": send(cid,f"🏓 Pong V28 by {SIGNATURE}",mid); return
+            if cmd=="/id": send(cid,f"Você:<code>{uid}</code> Chat:<code>{cid}</code> Dono:<code>{DONO_ID}</code>",mid); return
+            if cmd=="/reload" and is_admin_real(cid,uid): get_bio_real(cid,True); get_adms(cid); send(cid,"🔄 Recarregado by "+SIGNATURE,mid); return
         return
 
     if str(cid).startswith("-") and is_admin_real(cid,uid): return
@@ -209,7 +238,7 @@ def handle_message(msg):
         if pun.get("quando")=="reincidencia" and len(infracoes_tmp[(str(cid),uid)])<2:
             send_mention(cid,uid,nome,fala); return
         if pun["tipo"]=="ban" and perms["ban"]:
-            tg("banChatMember",{"chat_id":cid,"user_id":uid}); send_mention(cid,uid,nome,f"{fala} - ban (bio: {pun['trecho_bio'][:60]})"); return
+            tg("banChatMember",{"chat_id":cid,"user_id":uid}); send_mention(cid,uid,nome,f"{fala} - ban"); return
         if pun["tipo"]=="mute" and perms["restrict"] and pun.get("duracao_segundos",0)>0:
             tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(agora)+pun["duracao_segundos"]})
             send_mention(cid,uid,nome,f"{fala} - mute {pun['duracao_segundos']//60}min"); return
@@ -235,11 +264,11 @@ def webhook():
     return "ok",200
 
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT ADM by {SIGNATURE} V28 | Dono:{DONO_NOME} ID:{DONO_ID} | BOT_ID:{BOT_ID} ONLINE",200
+def home(): return f"ORBIT ADM by {SIGNATURE} V28.1 EXPLICATIVO | Dono:{DONO_NOME} ID:{DONO_ID} ONLINE",200
 
 try:
     tg("setWebhook",{"url":f"{RENDER_URL.rstrip('/')}/","allowed_updates":["message","edited_message"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL.rstrip('/')}/","allowed_updates":["message","edited_message"]})
-    print(f"[ADM by {SIGNATURE}] V28 ONLINE Dono:{DONO_NOME} ID:{DONO_ID} BOT_ID:{BOT_ID}")
+    print(f"[ADM by {SIGNATURE}] V28.1 ONLINE Dono:{DONO_NOME} ID:{DONO_ID}")
 except Exception as e: print(f"WEBHOOK ERR {e}")
 threading.Thread(target=keep_alive, daemon=True).start()
 if __name__=="__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
