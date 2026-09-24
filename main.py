@@ -40,32 +40,30 @@ def tg(m,p, timeout=12):
 
 CONTEXTO_CACHE = {}
 CACHE_LOCK = threading.Lock()
-def get_contexto(cid):
+def get_contexto(cid, force=False):
     with CACHE_LOCK:
         cached = CONTEXTO_CACHE.get(str(cid))
-        if cached and time.time()-cached["ts"]<60:
-            return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True
+        if not force and cached and time.time()-cached["ts"]<25:
+            return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True, True
     res = tg("getChat",{"chat_id":int(cid)})
     if not res.get("ok"):
         with CACHE_LOCK:
             cached = CONTEXTO_CACHE.get(str(cid))
             if cached:
-                return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True
-        return "", "", "", "", "", False
+                return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True, True
+        return "", "", "", "", "", False, False
     r = res.get("result",{}) or {}
     titulo = r.get("title","").strip()
     bio = (r.get("description") or "").strip()
     pin_obj = r.get("pinned_message",{}) or {}
     pin_raw = (pin_obj.get("text") or pin_obj.get("caption") or "")[:600].strip()
-    
     keywords = ["proibido","permitido","ban","silencia","regra","não pode","nao pode","link","spam","porn","ofensa","flood"]
     pin = pin_raw if pin_raw and any(k in pin_raw.lower() for k in keywords) else ""
-    
     dna = f"NOME: {titulo}\nBIO: {bio}\nFIXADO: {pin_raw}"
     lei = f"{bio}\n{pin}".strip()
     with CACHE_LOCK:
         CONTEXTO_CACHE[str(cid)] = {"dna":dna,"lei":lei,"bio":bio,"titulo":titulo,"pin":pin_raw,"ts":time.time()}
-    return dna, lei, bio, titulo, pin_raw, True
+    return dna, lei, bio, titulo, pin_raw, True, False
 
 def get_perms(cid):
     res = tg("getChatMember",{"chat_id":int(cid),"user_id":BOT_ID})
@@ -135,11 +133,16 @@ def call_ia(prompt,b64=None,mime="image/jpeg", temp=0.05):
             except: BLACK[f"{prov}:{model}"]=time.time()+120; continue
     return None
 
-def existe_literal(trecho, lei):
-    if not trecho or not lei: return False
-    t=trecho.strip()
-    if len(t)<4: return False
-    return t in lei
+def valida_regra_completa(trecho_ia, lei):
+    if not trecho_ia or not lei: return False, ""
+    t = trecho_ia.strip()
+    if len(t) < 10: return False, ""
+    if t not in lei: return False, ""
+    # pega linha completa onde o trecho está
+    for linha in lei.splitlines():
+        if t in linha and len(linha.strip())>=10:
+            return True, linha.strip()
+    return False, ""
 
 def parse_duracao_strict(t):
     if not t: return None
@@ -158,15 +161,30 @@ def parse_duracao_strict(t):
     if "dia" in u or u=="d": return n*86400
     return None
 
-def fala_humana(fala):
-    return random.choice([fala, f"{fala} - por aqui não", f"opa, {fala.lower()}", f"{fala} ✌️", f"{fala}, combinado?"])
+def fala_humana_ia(fala_base, nome, dna, tipo_pun="none"):
+    prompt = f'''Você é ADM humano. Gere 1 frase curta, natural, nunca repetida.
+CONTEXTO GRUPO: {dna[:500]}
+USUÁRIO: {nome}
+BASE: {fala_base}
+AÇÃO: {tipo_pun}
+Regras: Máx 18 palavras. Não invente regra. Não invente link. Não mencione ban/mute se tipo=none. Seja firme mas humano. Gíria leve ok.
+Retorne SÓ a frase.'''
+    out = call_ia(prompt, temp=0.95)
+    if out:
+        frase = re.sub(r'^["\']|["\']$', '', out.strip().split('\n')[0])[:200]
+        if len(frase)>=5: return frase
+    return fala_base
 
-def ia_analisa(dna, lei, texto, b64, mime, tipo, analisavel):
+def ia_analisa(dna, lei, texto, b64, mime, tipo, analisavel, is_cache):
     if not analisavel: return None
+    if tipo=="video" and not analisavel:
+        return None
     prompt=f'''Você é APENAS interpretador da BIO/FIXADO. Nunca invente regras.
 CONTEXTO: {dna}
-LEI: "{lei}"
-MSG: "{texto[:1200]}" Tipo={tipo}
+LEI COMPLETA: "{lei}"
+MSG: "{texto[:1200]}" Tipo={tipo} ThumbVideo={tipo=='video'}
+Instrução: Retorne JSON com a REGRA COMPLETA que foi violada (mín 10 chars) copiada da LEI.
+Se não houver violação clara, viola=false.
 JSON: {{"viola":bool,"trecho_bio":"","motivo":"","fala":"","confianca":0.0-1.0,"punicao":{{"tipo":"none|ban|mute","trecho_bio_punicao":""}}}}'''
     out=call_ia(prompt,b64,mime, temp=0.05)
     if not out: return None
@@ -174,12 +192,21 @@ JSON: {{"viola":bool,"trecho_bio":"","motivo":"","fala":"","confianca":0.0-1.0,"
         j=json.loads(re.search(r'\{.*\}',out,re.DOTALL).group())
         if "viola" not in j or not j.get("viola"): return j if "viola" in j else None
         if j.get("confianca",0) < 0.85: return None
-        if not existe_literal(j.get("trecho_bio",""), lei): return None
-        if len(j.get("trecho_bio","").strip().split())<2: return None
+        if tipo=="video" and j.get("confianca",0) < 0.92: return None
+        ok, linha = valida_regra_completa(j.get("trecho_bio",""), lei)
+        if not ok: return None
+        j["trecho_bio"] = linha
         p=j.get("punicao",{})
         if p.get("tipo") in ["ban","mute"]:
-            if not existe_literal(p.get("trecho_bio_punicao",""), lei): j["punicao"]["tipo"]="none"
-            if p.get("tipo")=="mute" and parse_duracao_strict(p.get("trecho_bio_punicao","")) is None: j["punicao"]["tipo"]="none"
+            if is_cache: j["punicao"]["tipo"]="none"
+            else:
+                ok2, linha2 = valida_regra_completa(p.get("trecho_bio_punicao",""), lei)
+                if not ok2: j["punicao"]["tipo"]="none"
+                else:
+                    if p.get("tipo")=="mute" and parse_duracao_strict(p.get("trecho_bio_punicao","")) is None:
+                        j["punicao"]["tipo"]="none"
+                    else:
+                        j["punicao"]["trecho_bio_punicao"]=linha2
         return j
     except: return None
 
@@ -191,7 +218,7 @@ def handle_message(msg, is_edit=False):
     if len(handle_message.seen)>300: handle_message.seen={k:v for k,v in handle_message.seen.items() if time.time()-v<120}
     if uid==BOT_ID: return
     txt=(msg.get("text") or msg.get("caption") or "").strip()
-    dna, lei, bio, titulo, pin, ctx_ok = get_contexto(cid)
+    dna, lei, bio, titulo, pin, ctx_ok, is_cache = get_contexto(cid)
     if not ctx_ok and not txt.startswith("/"): return
     if txt.startswith("/"):
         cmd=txt.split()[0].lower().split("@")[0]
@@ -212,7 +239,7 @@ def handle_message(msg, is_edit=False):
     b64,mime,tipo,analisavel = midia(msg)
     if tipo in ["documento","audio","voz"] and not txt: return
     if tipo=="foto" and not analisavel and not txt: return
-    ia=ia_analisa(dna, lei, txt or f"[{tipo}]", b64, mime, tipo, analisavel or bool(txt))
+    ia=ia_analisa(dna, lei, txt or f"[{tipo}]", b64, mime, tipo, analisavel or bool(txt), is_cache)
     if not ia or not ia.get("viola"): return
     perms=get_perms(cid)
     if perms is None or not perms.get("del"): return
@@ -220,20 +247,32 @@ def handle_message(msg, is_edit=False):
     del_resp=tg("deleteMessage",{"chat_id":cid,"message_id":mid})
     if not del_resp.get("ok"): return
     nome=html.escape(msg["from"].get("first_name",""))
-    fala=html.escape(fala_humana(ia.get("fala","Respeite as regras")[:200]))
-    trecho=html.escape(ia.get("trecho_bio","")[:180])
+    nome_raw=msg["from"].get("first_name","")
+    fala_base = ia.get("fala","Respeite as regras")[:200]
     pun=ia.get("punicao",{})
-    if pun.get("tipo")=="ban" and perms.get("ban") and existe_literal(pun.get("trecho_bio_punicao",""), lei):
-        ban_resp=tg("banChatMember",{"chat_id":cid,"user_id":uid})
-        if ban_resp.get("ok"):
-            tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - banido\n<i>{trecho}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
-    if pun.get("tipo")=="mute" and perms.get("ban") and existe_literal(pun.get("trecho_bio_punicao",""), lei):
-        dur=parse_duracao_strict(pun.get("trecho_bio_punicao",""))
-        if dur is not None:
-            mute_resp=tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(time.time())+dur} if dur>0 else {"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False}})
-            if mute_resp.get("ok"):
-                td=f"{dur}s" if dur>0 else "permanente"
-                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - silenciado {td}\n<i>{trecho}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
+    fala_ia = fala_humana_ia(fala_base, nome_raw, dna, pun.get("tipo","none"))
+    if not fala_ia or len(fala_ia)<3: fala_ia = fala_base
+    fala=html.escape(fala_ia)
+    trecho=html.escape(ia.get("trecho_bio","")[:180])
+    if pun.get("tipo")=="ban" and perms.get("ban") and not is_cache:
+        ok_pun, _ = valida_regra_completa(pun.get("trecho_bio_punicao",""), lei)
+        if ok_pun:
+            ban_resp=tg("banChatMember",{"chat_id":cid,"user_id":uid})
+            if ban_resp.get("ok"):
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - banido\n<i>{trecho}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
+            else:
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\n<i>Ban não executado: {html.escape(ban_resp.get("error",""))}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
+    if pun.get("tipo")=="mute" and perms.get("ban") and not is_cache:
+        ok_pun, _ = valida_regra_completa(pun.get("trecho_bio_punicao",""), lei)
+        if ok_pun:
+            dur=parse_duracao_strict(pun.get("trecho_bio_punicao",""))
+            if dur is not None:
+                mute_resp=tg("restrictChatMember",{"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False},"until_date":int(time.time())+dur} if dur>0 else {"chat_id":cid,"user_id":uid,"permissions":{"can_send_messages":False}})
+                if mute_resp.get("ok"):
+                    td=f"{dur}s" if dur>0 else "permanente"
+                    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala} - silenciado {td}\n<i>{trecho}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
+                else:
+                    tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\n<i>Mute não executado: {html.escape(mute_resp.get("error",""))}</i>\nby {SIGNATURE}',"parse_mode":"HTML"}); return
     tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {fala}\n<i>{trecho}</i>\nby {SIGNATURE}',"parse_mode":"HTML"})
 
 def handle_chat_member(update):
@@ -243,11 +282,24 @@ def handle_chat_member(update):
         user=new.get("user",{}) or old.get("user",{})
         if not user or user.get("id")==BOT_ID: return
         if old.get("status") in ["left","kicked"] and new.get("status")=="member":
-            dna, lei, bio, titulo, pin, _ = get_contexto(cid)
+            dna, lei, bio, titulo, pin, _, _ = get_contexto(cid, force=True)
             if lei and any(x in lei.lower() for x in ["bem vindo","bem-vindo","boas vindas","seja bem"]):
                 nome=user.get("first_name","")
-                welcome=call_ia(f'Crie boas-vindas curta. CONTEXTO: {dna} NOVO: {nome}', temp=0.9) or f"👋 {nome}, bem-vindo ao {titulo}!"
+                prompt=f"Boas-vindas curta para {nome}. CONTEXTO: {dna[:500]}. Não invente regras, links ou punições. Máx 20 palavras."
+                welcome=call_ia(prompt, temp=0.9) or f"👋 {nome}, bem-vindo ao {titulo}!"
                 tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={user["id"]}">{html.escape(nome)}</a> {html.escape(welcome)[:800]}\nby {SIGNATURE}',"parse_mode":"HTML"})
+    except: pass
+
+def handle_my_chat_member(update):
+    try:
+        chat=update["chat"]; cid=chat["id"]
+        new=update.get("new_chat_member",{}); old=update.get("old_chat_member",{})
+        if new.get("user",{}).get("id")!=BOT_ID: return
+        old_s = old.get("status"); new_s = new.get("status")
+        if old_s!=new_s or old.get("can_delete_messages")!=new.get("can_delete_messages") or old.get("can_restrict_members")!=new.get("can_restrict_members"):
+            with CACHE_LOCK:
+                CONTEXTO_CACHE.pop(str(cid), None)
+            get_contexto(cid, force=True)
     except: pass
 
 def webhook_guardian():
@@ -256,11 +308,23 @@ def webhook_guardian():
         time.sleep(300)
         try:
             info=tg("getWebhookInfo",{})
-            if not info.get("ok"): fail_count+=1; continue
+            if not info.get("ok"):
+                fail_count+=1
+                time.sleep(min(900, 60*(fail_count+1)))
+                continue
             res=info.get("result",{})
-            if not res.get("url","") or res.get("url","").rstrip("/")!=RENDER_URL.rstrip("/"):
+            url_atual = res.get("url","").rstrip("/")
+            url_esperada = RENDER_URL.rstrip("/")
+            last_err = res.get("last_error_message","")
+            pending = res.get("pending_update_count",0)
+            if not url_atual or url_atual!=url_esperada or ("wrong" in last_err.lower() and pending>10):
                 tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"]})
-        except: fail_count+=1
+                fail_count=0
+            else:
+                fail_count=0
+        except:
+            fail_count+=1
+            time.sleep(min(900, 60*(fail_count+1)))
 
 def keep_alive():
     while True:
@@ -275,6 +339,7 @@ def wh():
     if "message" in u: threading.Thread(target=handle_message, args=(u["message"], False), daemon=True).start()
     if "edited_message" in u: threading.Thread(target=handle_message, args=(u["edited_message"], True), daemon=True).start()
     if "chat_member" in u: threading.Thread(target=handle_chat_member, args=(u["chat_member"],), daemon=True).start()
+    if "my_chat_member" in u: threading.Thread(target=handle_my_chat_member, args=(u["my_chat_member"],), daemon=True).start()
     return "ok",200
 
 @app.route("/", methods=["GET"])
