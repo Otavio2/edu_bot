@@ -145,9 +145,9 @@ def handle(msg):
                 tg("deleteMessage",{"chat_id":cid,"message_id":mid})
         if cmd in ["/start","/help","/regras","/ping"]:
             if int(cid)>0:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V30 by {SIGNATURE}</b>\n100% GRUPO - SEM MEMÓRIA\nLEI = BIO+FIXADO\nDev: {DONO_NOME}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM by {SIGNATURE}</b>\n100% GRUPO - ADM\nLEI = BIO+FIXADO\nDev: {DONO_NOME}","parse_mode":"HTML"})
             else:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V30 by {SIGNATURE}</b>\n<b>LEI ATUAL:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NÃO MODERA'}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM by {SIGNATURE}</b>\n<b>LEI ATUAL:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NÃO MODERA'}","parse_mode":"HTML"})
         return
     if msg.get("new_chat_members"):
         if lei and any(x in lei.lower() for x in ["bem vindo","bem-vindo","bemvindo","boas vindas","seja bem"]):
