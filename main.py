@@ -47,19 +47,25 @@ def get_contexto(cid):
             return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True
     res = tg("getChat",{"chat_id":int(cid)})
     if not res.get("ok"):
-        if 'cached' in locals() and cached:
-            return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True
+        with CACHE_LOCK:
+            cached = CONTEXTO_CACHE.get(str(cid))
+            if cached:
+                return cached["dna"], cached["lei"], cached["bio"], cached["titulo"], cached["pin"], True
         return "", "", "", "", "", False
     r = res.get("result",{}) or {}
     titulo = r.get("title","").strip()
     bio = (r.get("description") or "").strip()
     pin_obj = r.get("pinned_message",{}) or {}
-    pin = (pin_obj.get("text") or pin_obj.get("caption") or "")[:600].strip()
-    dna = f"NOME: {titulo}\nBIO: {bio}\nFIXADO: {pin}"
+    pin_raw = (pin_obj.get("text") or pin_obj.get("caption") or "")[:600].strip()
+    
+    keywords = ["proibido","permitido","ban","silencia","regra","não pode","nao pode","link","spam","porn","ofensa","flood"]
+    pin = pin_raw if pin_raw and any(k in pin_raw.lower() for k in keywords) else ""
+    
+    dna = f"NOME: {titulo}\nBIO: {bio}\nFIXADO: {pin_raw}"
     lei = f"{bio}\n{pin}".strip()
     with CACHE_LOCK:
-        CONTEXTO_CACHE[str(cid)] = {"dna":dna,"lei":lei,"bio":bio,"titulo":titulo,"pin":pin,"ts":time.time()}
-    return dna, lei, bio, titulo, pin, True
+        CONTEXTO_CACHE[str(cid)] = {"dna":dna,"lei":lei,"bio":bio,"titulo":titulo,"pin":pin_raw,"ts":time.time()}
+    return dna, lei, bio, titulo, pin_raw, True
 
 def get_perms(cid):
     res = tg("getChatMember",{"chat_id":int(cid),"user_id":BOT_ID})
