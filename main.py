@@ -194,9 +194,9 @@ def handle_message(msg, is_edit=False):
             if perms and perms.get("del"): tg("deleteMessage",{"chat_id":cid,"message_id":mid})
         if cmd in ["/start","/help","/regras","/ping","/orbit"]:
             if int(cid)>0:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V32 by {SIGNATURE}</b>\nBIO DEFINE → IA INTERPRETA → CÓDIGO VALIDA → PERMISSÃO CONFIRMA → TELEGRAM EXECUTA\nDev: {DONO_NOME}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM by {SIGNATURE}</b>\nBIO DEFINE → IA INTERPRETA → CÓDIGO VALIDA → PERMISSÃO CONFIRMA → TELEGRAM EXECUTA\nDev: {DONO_NOME}","parse_mode":"HTML"})
             else:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM V32</b>\n<b>LEI:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NÃO MODERA'}\nby {SIGNATURE}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM </b>\n<b>LEI:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NÃO MODERA'}\nby {SIGNATURE}","parse_mode":"HTML"})
         return
     if int(cid)>0: return
     admin_check=is_admin(cid,uid)
@@ -272,7 +272,7 @@ def wh():
     return "ok",200
 
 @app.route("/", methods=["GET"])
-def home(): return f"ORBIT ADM V32 by {SIGNATURE} ONLINE",200
+def home(): return f"ORBIT ADM by {SIGNATURE} ONLINE",200
 
 try: tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"]})
 except: pass
