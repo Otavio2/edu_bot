@@ -227,10 +227,28 @@ def handle_message(msg, is_edit=False):
             if perms and perms.get("del"): tg("deleteMessage",{"chat_id":cid,"message_id":mid})
         if cmd in ["/start","/help","/regras","/ping","/orbit"]:
             if int(cid)>0:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM by {SIGNATURE}</b>\nBIO DEFINE → IA INTERPRETA → CÓDIGO VALIDA → PERMISSÃO CONFIRMA → TELEGRAM EXECUTA\nDev: {DONO_NOME}","parse_mode":"HTML"})
+                tg("sendMessage",{"chat_id":cid,"text":f"""🪐 <b>Orbit Alliance inicializado com sucesso!</b>
+🤖 <b>Sistema 100% Inteligencia Artificial | Ativo 24h</b>
+
+📜 <b>Como eu funciono:</b>
+Ao me adicionar em um grupo, eu leio automaticamente a BIO e analiso a mensagem FIXADA. Nao e necessario fazer nenhuma configuracao manual.
+
+🔄 <b>Sincronizacao Automatica:</b>
+Se voce alterar as regras da BIO do grupo, eu atualizo meu banco de dados de forma totalmente automatica.
+
+⚙️ <b>Fluxo de Operacao Autonoma:</b>
+<code>BIO DEFINE ➔ IA INTERPRETA ➔ CODIGO VALIDA ➔ PERMISSAO CONFIRMA ➔ TELEGRAM EXECUTA</code>
+
+🛠️ <b>Instrucoes de ativacao:</b>
+1️⃣ Me adicione ao seu grupo.
+2️⃣ Me de as permissoes de Administrador.
+3️⃣ Pronto! O grupo passara a ser moderado estritamente pela BIO de forma 100% literal.
+
+👨‍💻 Dev: {DONO_NOME}
+<i>{html.escape(SIGNATURE)}</i>""","parse_mode":"HTML"})
             else:
-                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM </b>\n<b>LEI:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NÃO MODERA'}\nby {SIGNATURE}","parse_mode":"HTML"})
-        return
+                tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM </b>\n<b>LEI:</b>\n{html.escape(lei)[:1200] or 'VAZIA = NAO MODERA'}\nby {SIGNATURE}","parse_mode":"HTML"})
+            return
     if int(cid)>0: return
     admin_check=is_admin(cid,uid)
     if admin_check is None: return
