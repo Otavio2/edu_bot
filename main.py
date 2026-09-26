@@ -168,40 +168,71 @@ def midia(msg):
     if msg.get("audio"): return None,None,"audio", False
     return None,None,"texto", True
 
-def call_ia(prompt,b64=None,mime="image/jpeg", temp=0.05, budget=20):
-    start=time.time()
-    for prov,cfg in PROVIDERS.items():
-        if time.time()-start>budget: break
-        key=os.getenv(cfg["env"])
-        if not key or (b64 and not cfg["vision"]): continue
-        for model in cfg["models"]:
-            if time.time()-start>budget: break
-            if BLACK.get(f"{prov}:{model}",0)>time.time(): continue
+def call_ia(prompt: str, temp: float = 0.3, budget: int = BUDGET_TOKENS, system: str = None):
+    last_err = "Nenhuma tentativa"
+    ordem = [k for k in PROVIDERS.keys() if k in os.environ or os.getenv(PROVIDERS[k]["env"])]
+    # força ordem: gemini -> groq -> openrouter -> mistral -> cerebras
+    prefer = ["gemini","groq","openrouter","mistral","cerebras"]
+    ordem = sorted(ordem, key=lambda x: prefer.index(x) if x in prefer else 99)
+
+    print(f"--- INICIANDO IA, ordem: {ordem} ---", flush=True)
+
+    for prov in ordem:
+        cfg = PROVIDERS[prov]
+        api_key = os.getenv(cfg["env"])
+        if not api_key:
+            print(f"!!! PULANDO {prov}: sem {cfg['env']}", flush=True)
+            continue
+        if len(api_key) < 10:
+            print(f"!!! PULANDO {prov}: key muito curta ({len(api_key)})", flush=True)
+            continue
+
+        for modelo in cfg["models"]:
+            bkey = f"{prov}:{modelo}"
+            if BLACK.get(bkey, 0) > time.time():
+                print(f"!!! PULANDO {prov}/{modelo}: em blacklist", flush=True)
+                continue
+
             try:
-                if cfg["fmt"]=="openai":
-                    c=[{"type":"text","text":prompt}]
-                    if b64: c.append({"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}})
-                    r=get_sess().post(f"{cfg['url']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":c}],"temperature":temp,"max_tokens":900}, timeout=18)
+                print(f">>> TENTANDO {prov}/{modelo}...", flush=True)
+                headers = {"Content-Type": "application/json"}
+                data = {}
+
+                if prov == "gemini":
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={api_key}"
+                    data = {"contents": [{"parts": [{"text": (system + '\n\n' if system else '') + prompt}]}], "generationConfig": {"temperature": temp, "maxOutputTokens": budget}}
                 else:
-                    p=[{"text":prompt}]
-                    if b64: p.append({"inline_data":{"mime_type":mime,"data":b64}})
-                    r=get_sess().post(f"{cfg['url']}/models/{model}:generateContent?key={key}", json={"contents":[{"parts":p}]}, timeout=18)
-                if r.status_code==401 or r.status_code==403:
-                    logging.error(f"IA auth fail {prov}:{model} {r.text[:200]}")
-                    BLACK[f"{prov}:{model}"]=time.time()+3600; continue
-                if r.status_code==404 or r.status_code==400:
-                    BLACK[f"{prov}:{model}"]=time.time()+3600; continue
-                if r.status_code==429:
-                    BLACK[f"{prov}:{model}"]=time.time()+600; continue
-                if r.status_code>=500:
-                    BLACK[f"{prov}:{model}"]=time.time()+180; continue
-                j=r.json()
-                txt=j["choices"][0]["message"]["content"] if cfg["fmt"]=="openai" else j["candidates"][0]["content"]["parts"][0]["text"]
-                if txt and len(txt)>5: return txt
+                    url = cfg["url"]
+                    headers["Authorization"] = f"Bearer {api_key}"
+                    msgs = []
+                    if system: msgs.append({"role": "system", "content": system})
+                    msgs.append({"role": "user", "content": prompt})
+                    data = {"model": modelo, "messages": msgs, "temperature": temp, "max_tokens": budget}
+
+                r = requests.post(url, headers=headers, json=data, timeout=25)
+
+                if r.status_code!= 200:
+                    last_err = f"{prov}/{modelo} HTTP {r.status_code}: {r.text[:400]}"
+                    print(f"!!! FALHOU {last_err}", flush=True)
+                    if r.status_code in [401, 403, 429]:
+                        BLACK[bkey] = time.time() + 600
+                    continue
+
+                j = r.json()
+                if prov == "gemini":
+                    txt = j["candidates"][0]["content"]["parts"][0]["text"]
+                else:
+                    txt = j["choices"][0]["message"]["content"]
+
+                print(f"+++ SUCESSO {prov}/{modelo}", flush=True)
+                return txt.strip()
+
             except Exception as e:
-                logging.error(f"call_ia {prov}:{model} err {e}", exc_info=True)
-                # 18/19 - só blacklist se erro de modelo, não parsing
-                BLACK[f"{prov}:{model}"]=time.time()+120; continue
+                last_err = f"{prov}/{modelo} EX: {str(e)[:500]}"
+                print(f"!!! ERRO {last_err}", flush=True)
+                continue
+
+    print(f"!!! TODAS IAs FALHARAM. Ultimo erro: {last_err}", flush=True)
     return None
 
 def valida_regra_completa(trecho_ia, lei):
