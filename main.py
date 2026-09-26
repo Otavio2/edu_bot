@@ -629,4 +629,22 @@ else:
 
 threading.Thread(target=keep_alive, daemon=True).start()
 threading.Thread(target=webhook_guardian, daemon=True).start()
+
+@app.route("/debug-ia", methods=["GET"])
+def debug_ia():
+    out = {}
+    for prov,cfg in PROVIDERS.items():
+        key = os.getenv(cfg["env"])
+        out[prov] = {
+            "tem_key": bool(key),
+            "tamanho": len(key) if key else 0,
+            "comeca_com": key[:6] if key else "",
+            "black": [k for k in BLACK if k.startswith(prov) and BLACK[k] > time.time()]
+        }
+    # testa 1 chamada real
+    teste = call_ia("Say 'OK' only", temp=0.0, budget=10)
+    out["teste_ia_resposta"] = teste
+    return out, 200
+
+
 if __name__=="__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT","10000")))
