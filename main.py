@@ -168,7 +168,7 @@ def midia(msg):
     if msg.get("audio"): return None,None,"audio", False
     return None,None,"texto", True
 
-def call_ia(prompt: str, temp: float = 0.3, budget: int = BUDGET_TOKENS, system: str = None):
+def call_ia(prompt: str, temp: float = 0.3, budget: int = 1024, system: str = None):
     last_err = "Nenhuma tentativa"
     ordem = [k for k in PROVIDERS.keys() if k in os.environ or os.getenv(PROVIDERS[k]["env"])]
     # força ordem: gemini -> groq -> openrouter -> mistral -> cerebras
