@@ -163,7 +163,7 @@ def midia(msg):
     if msg.get("audio"): return None,None,"audio", False
     return None,None,"texto", True
 
-def call_ia(prompt):
+def call_ia(prompt, temp=0.7, **kwargs):
     for provider, model, url in PROVIDERS:
         try:
             key = os.getenv(f"{provider.upper()}_API_KEY", "")
