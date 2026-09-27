@@ -145,6 +145,16 @@ def is_admin(cid,uid):
     if not res.get("ok"): return None
     try: return any(a.get("user",{}).get("id")==uid for a in res.get("result",[]) or [])
     except: return None
+
+# --- NOVO: VERIFICADOR DE FOTO DE PERFIL ---
+def tem_foto(uid):
+    try:
+        res = tg("getUserProfilePhotos", {"user_id": int(uid), "limit": 1}, timeout=8, max_retries=0)
+        if not res.get("ok"): return True
+        return res.get("result",{}).get("total_count",0) > 0
+    except:
+        return True
+
 def get_b64(fid):
     try:
         fp=tg("getFile",{"file_id":fid}).get("result",{}).get("file_path")
@@ -291,6 +301,21 @@ def handle_message(msg,is_edit=False,update_id=None):
             with CACHE_LOCK:
                 if update_id is not None: SEEN[update_id]={"status":"done","ts":now}
             return
+
+        # === REGRA ESPECIAL: PERFIL SEM FOTO (ANTES DA IA PRA ECONOMIZAR) ===
+        low_lei = lei.lower()
+        if "sem foto" in low_lei or "perfil sem foto" in low_lei or "foto de perfil" in low_lei:
+            if not tem_foto(uid):
+                time.sleep(0.4)
+                tg("deleteMessage",{"chat_id":cid,"message_id":mid})
+                with CACHE_LOCK: SEEN_MSGS[action_key]=now
+                nome=html.escape(msg["from"].get("first_name",""))
+                fala_ia = fala_humana_ia("foto de perfil obrigatória, coloque uma foto", msg["from"].get("first_name",""), dna, "none", txt)
+                tg("sendMessage",{"chat_id":cid,"text":f'<a href="tg://user?id={uid}">{nome}</a> {html.escape(fala_ia)}\n<i>perfil sem foto</i>\nby {SIGNATURE}',"parse_mode":"HTML"})
+                with CACHE_LOCK:
+                    if update_id is not None: SEEN[update_id]={"status":"done","ts":now}
+                return
+
         b64,mime,tipo,analisavel=midia(msg)
         ia=ia_analisa(dna,lei,txt or f"[{tipo}]",b64,mime,tipo,analisavel or bool(txt),confirmado)
         if not ia or not ia.get("viola"):
@@ -345,6 +370,7 @@ def handle_my_chat_member(update):
         with CACHE_LOCK: CONTEXTO_CACHE.pop(str(cid),None)
         get_contexto(cid,force=True)
     except: pass
+
 def webhook_guardian():
     while True:
         time.sleep(300)
