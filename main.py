@@ -17,7 +17,6 @@ if not RENDER_URL.startswith("http"): RENDER_URL = f"https://{RENDER_URL}"
 API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 BOT_ID = 0; BOT_USERNAME = ""; BOT_INFO_OK = False
 
-# === BLINDAGEM: BUSCA MODELOS VIVOS SOZINHO ===
 PROVIDERS_RAW = {
     "groq": {"key_env":"GROQ_API_KEY","endpoint":"https://api.groq.com/openai/v1","format":"openai"},
     "gemini": {"key_env":"GEMINI_API_KEY","endpoint":"https://generativelanguage.googleapis.com/v1beta","format":"gemini"},
@@ -79,7 +78,6 @@ def atualizar_catalogo():
             try:
                 novos=f.result()
                 if novos:
-                    # filtra lixo
                     novos=[m for m in novos if "vision-preview" not in m and "1.5-flash" not in m]
                     PROVIDERS[p]["models"]=list(dict.fromkeys(novos))[:8]
                     print(f"+++ AUTO {p}: {PROVIDERS[p]['models'][:2]}",flush=True)
@@ -91,7 +89,6 @@ def loop_catalogo():
         time.sleep(1800)
         atualizar_catalogo()
 
-# === SEU CODIGO ORIGINAL INTACTO ===
 CONTEXTO_CACHE={}; SEEN={}; SEEN_MSGS={}; CACHE_LOCK=threading.Lock(); WORKERS_ACTIVE={"count":0}
 def normalize_text(s):
     s=unicodedata.normalize("NFKD",s or ""); s=re.sub(r'\s+',' ',s).strip().lower(); s=re.sub(r'^[0-9\-\.\•\s]+','',s); return s
@@ -269,8 +266,17 @@ def handle_message(msg,is_edit=False,update_id=None):
                     tg("sendMessage",{"chat_id":cid,"text":f"🤖 <b>ORBIT ADM</b>\n<b>LEI:</b>\n{html.escape(lei)[:1200] or 'VAZIA'}\nby {SIGNATURE}","parse_mode":"HTML"})
                 else:
                     lang=msg["from"].get("language_code","en") or "en"
-                    p_start=f'''User lang {lang}. Translate welcome keep <b> <code>: 🪐 <b>Orbit Alliance inicializado com sucesso!</b>'''
-                    t_start=call_ia(p_start,temp=0.7) or "🪐 <b>Orbit Alliance inicializado com sucesso!</b>"
+                    WELCOME_7 = """🪐 <b>Orbit Alliance inicializado com sucesso!</b>
+🤖 <b>Sistema 100% IA | Ativo 24h</b>
+📜 <b>Como funciono:</b> Leio BIO e FIXADO automaticamente.
+🔄 <b>Sincronização:</b> BIO alterada -> atualizo automático.
+⚙️ <b>Fluxo:</b> <code>BIO DEFINE ➔ IA INTERPRETA ➔ CODIGO VALIDA ➔ PERMISSÃO CONFIRMA ➔ TELEGRAM EXECUTA</code>
+🛠️ 1️⃣ Adicione ao grupo 2️⃣ Dê admin 3️⃣ Pronto!"""
+                    p_start=f'''Translate to {lang} keep <b> <code> exactly. Text:
+{WELCOME_7}'''
+                    t_start=call_ia(p_start,temp=0.7) or WELCOME_7
+                    if len(t_start) < 100:
+                        t_start = WELCOME_7
                     tg("sendMessage",{"chat_id":cid,"text":f"{t_start[:3500]}\n\n👨‍💻 Dev: {DONO_NOME}\n<i>{html.escape(SIGNATURE)}</i>","parse_mode":"HTML"})
                 with CACHE_LOCK:
                     if update_id is not None: SEEN[update_id]={"status":"done","ts":now}
