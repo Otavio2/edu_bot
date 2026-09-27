@@ -19,8 +19,12 @@ BOT_USERNAME = ""
 BOT_INFO_OK = False
 
 PROVIDERS = [
-    ("gemini", "gemini-1.5-flash", "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}"),
-    ("groq", "llama-3.1-8b-instant", "https://api.groq.com/openai/v1/chat/completions"),
+    # Gemini novo - tem que usar v1beta
+    ("gemini", "gemini-2.5-flash", "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}"),
+    ("gemini", "gemini-2.0-flash", "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}"),
+    # Groq novos - os antigos llama foram aposentados
+    ("groq", "openai/gpt-oss-20b", "https://api.groq.com/openai/v1/chat/completions"),
+    ("groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1/chat/completions"),
     ("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1/chat/completions"),
 ]
 BLACK={}
