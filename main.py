@@ -195,6 +195,7 @@ def call_ia(prompt,b64=None,mime="image/jpeg", temp=0.05, budget=20):
                 txt=j["choices"][0]["message"]["content"] if cfg["fmt"]=="openai" else j["candidates"][0]["content"]["parts"][0]["text"]
                 if txt and len(txt)>5: return txt
             except Exception as e:
+                print(f"ERRO IA {provider}/{model}: {e} - resposta: {r.text[:200] if 'r' in locals() else 'sem resposta'}")
                 BLACK[f"{prov}:{model}"]=time.time()+120; continue
     return None
 
