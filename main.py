@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 SIGNATURE = "Kʆɛɓɛʀ"
 DONO_NOME = "Kleber"
-DONO_ID = int(os.getenv("DONO_ID","8398287578"))
+DONO_ID = int(os.getenv("DONO_ID","0"))
 BOT_TOKEN = os.getenv("BOT_TOKEN","").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET","").strip()
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL","").strip()
@@ -98,8 +98,8 @@ def tg(m,p,timeout=12,max_retries=2):
             if not API: return {"ok":False}
             r=get_sess().post(f"{API}/{m}",json=p,timeout=timeout)
             if r.status_code==429:
-                try: ra=r.json().get("parameters",{}).get("retry_after",2)
-                except: ra=2
+                try: ra=r.json().get("parameters",{}).get("retry_after",3)
+                except: ra=3
                 if attempt<max_retries: time.sleep(min(ra,10)); continue
                 return {"ok":False}
             if r.status_code>=500 and attempt<max_retries: time.sleep(1+attempt); continue
@@ -393,7 +393,7 @@ def health():
     return {"telegram_ok":tg_ok,"webhook_ok":wh_ok,"modelos":{k:v.get("models",[])[:3] for k,v in PROVIDERS.items()},"by":SIGNATURE},200
 
 if validate_token():
-    try: 
+    try:
         r=tg("setWebhook",{"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"],"secret_token":WEBHOOK_SECRET} if WEBHOOK_SECRET else {"url":f"{RENDER_URL}/","allowed_updates":["message","edited_message","chat_member","my_chat_member"]})
         logging.info(f"WEBHOOK {r}")
     except: pass
