@@ -18,13 +18,11 @@ BOT_ID = 0
 BOT_USERNAME = ""
 BOT_INFO_OK = False
 
-PROVIDERS = {
-    "gemini": {"env":"GEMINI_API_KEY","url":"https://generativelanguage.googleapis.com/v1beta","fmt":"gemini","models":["gemini-2.5-flash","gemini-2.5-flash-lite","gemini-2.0-flash-lite"],"vision":True},
-    "groq": {"env":"GROQ_API_KEY","url":"https://api.groq.com/openai/v1","fmt":"openai","models":["llama-3.3-70b-versatile","llama-3.1-8b-instant","meta-llama/llama-4-maverick-17b-128e-instruct"],"vision":True},
-    "mistral": {"env":"MISTRAL_API_KEY","url":"https://api.mistral.ai/v1","fmt":"openai","models":["pixtral-12b-2409","mistral-large-latest","mistral-small-latest"],"vision":True},
-    "openrouter": {"env":"OPENROUTER_API_KEY","url":"https://openrouter.ai/api/v1","fmt":"openai","models":["google/gemini-2.5-flash:free","meta-llama/llama-3.3-70b-instruct:free","mistralai/mistral-7b-instruct:free"],"vision":True},
-    "cerebras": {"env":"CEREBRAS_API_KEY","url":"https://api.cerebras.ai/v1","fmt":"openai","models":["llama-3.3-70b","llama3.1-8b"],"vision":False},
-}
+PROVIDERS = [
+    ("gemini", "gemini-1.5-flash", "https://generativelanguage.googleapis.com/v1/models/{}:generateContent?key={}"),
+    ("groq", "llama-3.1-8b-instant", "https://api.groq.com/openai/v1/chat/completions"),
+    ("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1/chat/completions"),
+]
 BLACK={}
 thread_local=threading.local()
 def get_sess():
@@ -165,38 +163,26 @@ def midia(msg):
     if msg.get("audio"): return None,None,"audio", False
     return None,None,"texto", True
 
-def call_ia(prompt,b64=None,mime="image/jpeg", temp=0.05, budget=20):
-    start=time.time()
-    for prov,cfg in PROVIDERS.items():
-        if time.time()-start>budget: break
-        key=os.getenv(cfg["env"])
-        if not key or (b64 and not cfg["vision"]): continue
-        for model in cfg["models"]:
-            if time.time()-start>budget: break
-            if BLACK.get(f"{prov}:{model}",0)>time.time(): continue
-            try:
-                if cfg["fmt"]=="openai":
-                    c=[{"type":"text","text":prompt}]
-                    if b64: c.append({"type":"image_url","image_url":{"url":f"data:{mime};base64,{b64}"}})
-                    r=get_sess().post(f"{cfg['url']}/chat/completions", headers={"Authorization":f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":c}],"temperature":temp,"max_tokens":900}, timeout=18)
-                else:
-                    p=[{"text":prompt}]
-                    if b64: p.append({"inline_data":{"mime_type":mime,"data":b64}})
-                    r=get_sess().post(f"{cfg['url']}/models/{model}:generateContent?key={key}", json={"contents":[{"parts":p}]}, timeout=18)
-                if r.status_code==401 or r.status_code==403:
-                    BLACK[f"{prov}:{model}"]=time.time()+3600; continue
-                if r.status_code==404 or r.status_code==400:
-                    BLACK[f"{prov}:{model}"]=time.time()+3600; continue
-                if r.status_code==429:
-                    BLACK[f"{prov}:{model}"]=time.time()+600; continue
-                if r.status_code>=500:
-                    BLACK[f"{prov}:{model}"]=time.time()+180; continue
-                j=r.json()
-                txt=j["choices"][0]["message"]["content"] if cfg["fmt"]=="openai" else j["candidates"][0]["content"]["parts"][0]["text"]
-                if txt and len(txt)>5: return txt
-            except Exception as e:
-                print(f"ERRO IA {provider}/{model}: {e} - resposta: {r.text[:200] if 'r' in locals() else 'sem resposta'}")
-                BLACK[f"{prov}:{model}"]=time.time()+120; continue
+def call_ia(prompt):
+    for provider, model, url in PROVIDERS:
+        try:
+            key = os.getenv(f"{provider.upper()}_API_KEY", "")
+            if not key:
+                print(f"SEM KEY {provider}")
+                continue
+            print(f"TENTANDO {provider}/{model}")
+            if provider == "gemini":
+                r = requests.post(url.format(model, key), json={"contents":[{"parts":[{"text":prompt}]}]}, timeout=20)
+                print(f"GEMINI STATUS {r.status_code} {r.text[:300]}")
+                if r.status_code == 200:
+                    return r.json()['candidates'][0]['content']['parts'][0]['text']
+            else:
+                r = requests.post(url, headers={"Authorization": f"Bearer {key}"}, json={"model":model,"messages":[{"role":"user","content":prompt}]}, timeout=20)
+                print(f"{provider.upper()} STATUS {r.status_code} {r.text[:300]}")
+                if r.status_code == 200:
+                    return r.json()['choices'][0]['message']['content']
+        except Exception as e:
+            print(f"EXCEPTION {provider}: {e}")
     return None
 
 def valida_regra_completa(trecho_ia, lei):
